@@ -1,5 +1,7 @@
 #!/usr/bin/env python
-"""摄入文档目录中所有未摄入的文件，使用真实 Embedding API（低内存版本）"""
+"""摄入文档目录中所有未摄入的文件，使用真实 Embedding API（低内存版本v3）
+核心策略：使用新 collection 写入，避免大索引内存问题；查询时合并两个 collection
+"""
 import os
 import sys
 import time
@@ -19,7 +21,10 @@ EMBEDDING_URL = "https://ark.cn-beijing.volces.com/api/coding/v3/embeddings/mult
 EMBEDDING_MODEL = "doubao-embedding-vision-250615"
 EMBEDDING_DIM = 1024
 
-# 低内存优化：复用 httpx Client，避免每次创建/销毁
+# 新增数据的 collection 名称（避免旧索引内存问题）
+NEW_COLLECTION_NAME = "medical_device_kb_v2"
+
+# 低内存优化：复用 httpx Client
 _http_client = None
 
 def _get_http_client():
@@ -57,7 +62,7 @@ def get_embedding(text: str) -> list:
 
 
 def get_embeddings_batch(texts: list, max_retries: int = 3) -> list:
-    """逐个获取 embeddings，失败自动重试（低内存：不缓存全部结果，边获取边存入）"""
+    """逐个获取 embeddings，失败自动重试"""
     results = [None] * len(texts)
     for attempt in range(max_retries):
         remaining_indices = [i for i, r in enumerate(results) if r is None]
@@ -67,7 +72,7 @@ def get_embeddings_batch(texts: list, max_retries: int = 3) -> list:
             emb = get_embedding(texts[i])
             if emb:
                 results[i] = emb
-            time.sleep(0.05)
+            time.sleep(0.03)
         if attempt < max_retries - 1:
             failed = sum(1 for r in results if r is None)
             if failed > 0:
@@ -86,6 +91,8 @@ def scan_directory(base_dir):
             ext = Path(filename).suffix.lower()
             if ext not in supported_exts:
                 continue
+            if filename.startswith('~$'):
+                continue
 
             full_path = os.path.join(root, filename)
             rel_path = os.path.relpath(full_path, base_dir)
@@ -100,7 +107,7 @@ def scan_directory(base_dir):
 
 
 def get_existing_sources():
-    """从缓存文件加载已有的来源，如果不存在则从 ChromaDB 分页提取并缓存"""
+    """从缓存文件加载已有的来源"""
     import json
     cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "existing_sources.json")
 
@@ -110,14 +117,13 @@ def get_existing_sources():
         print(f"从缓存加载了 {len(sources)} 个已有来源")
         return sources
 
-    # 缓存不存在，从 ChromaDB 分页提取（低内存：每次只取一批 metadata）
+    # 缓存不存在，从旧 ChromaDB 分页提取
     print("缓存不存在，从 ChromaDB 分页提取已有来源...")
     import chromadb
     from chromadb.config import Settings
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
     db_path = os.path.join(base_dir, "data", "chroma_db")
-
     client = chromadb.PersistentClient(path=db_path, settings=Settings(anonymized_telemetry=False))
     collection = client.get_collection("medical_device_kb")
     total = collection.count()
@@ -135,11 +141,26 @@ def get_existing_sources():
         offset += batch_size
         print(f"  已提取 {min(offset, total)}/{total} 条...")
 
-    # 释放 ChromaDB 客户端
+    # 同时检查新 collection 的已有来源
+    try:
+        new_coll = client.get_collection(NEW_COLLECTION_NAME)
+        new_total = new_coll.count()
+        offset2 = 0
+        while offset2 < new_total:
+            result2 = new_coll.get(limit=batch_size, offset=offset2, include=['metadatas'])
+            for meta in result2.get('metadatas', []):
+                if meta:
+                    source = meta.get('source')
+                    if source:
+                        sources.add(source)
+            offset2 += batch_size
+        print(f"  从 {NEW_COLLECTION_NAME} 额外提取了来源")
+    except Exception:
+        pass
+
     del client, collection
     gc.collect()
 
-    # 保存缓存
     with open(cache_file, 'w', encoding='utf-8') as f:
         json.dump(sorted(sources), f, ensure_ascii=False)
     print(f"提取了 {len(sources)} 个已有来源，已保存到缓存")
@@ -151,11 +172,14 @@ def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(base_dir)
     docs_dir = os.path.join(project_root, "develop_documents")
+    db_path = os.path.join(base_dir, "data", "chroma_db")
 
     print("=" * 80)
-    print("文档摄入工具（使用真实 Embedding API）")
+    print("文档摄入工具（使用真实 Embedding API - v3 新collection策略）")
     print("=" * 80)
     print(f"文档目录: {docs_dir}")
+    print(f"新数据写入 collection: {NEW_COLLECTION_NAME}")
+    print(f"旧 collection: medical_device_kb (只读)")
 
     if not os.path.exists(docs_dir):
         print(f"\n错误: 目录不存在: {docs_dir}")
@@ -165,19 +189,6 @@ def main():
     print("\n正在扫描文档目录...")
     all_files = scan_directory(docs_dir)
     print(f"找到 {len(all_files)} 个文档文件")
-
-    # 加载向量库（不传 embedding_function，加速加载）
-    print("\n正在加载向量库...")
-    import chromadb
-    from chromadb.config import Settings
-
-    db_path = os.path.join(base_dir, "data", "chroma_db")
-    client = chromadb.PersistentClient(path=db_path, settings=Settings(anonymized_telemetry=False))
-    collection = client.get_or_create_collection(
-        name="medical_device_kb",
-        metadata={"description": "医疗器械体系文件知识库"}
-    )
-    print(f"向量库当前文档数: {collection.count()} 个文本块")
 
     # 获取已摄入的文件
     print("\n正在检查已摄入的文件...")
@@ -204,6 +215,18 @@ def main():
     for d, count in sorted(dir_stats.items(), key=lambda x: -x[1])[:20]:
         print(f"  {d}: {count} 个文件")
 
+    # 创建新 collection
+    print("\n正在创建/获取新 collection...")
+    import chromadb
+    from chromadb.config import Settings
+
+    client = chromadb.PersistentClient(path=db_path, settings=Settings(anonymized_telemetry=False))
+    collection = client.get_or_create_collection(
+        name=NEW_COLLECTION_NAME,
+        metadata={"description": "医疗器械体系文件知识库 - 新增数据(2026-05)"}
+    )
+    print(f"新 collection 当前文档数: {collection.count()} 个文本块")
+
     # 开始摄入
     print("\n开始摄入文档...")
     print("=" * 80)
@@ -218,20 +241,19 @@ def main():
     }
 
     start_time = time.time()
-    # 低内存：分批提交大小，每处理一批文件后就提交并释放
-    BATCH_COMMIT_SIZE = 20  # 每20个文件提交一次并触发GC
+    BATCH_COMMIT_SIZE = 20  # 每20个文件批量提交
 
-    # 低内存：暂存区，批量 add 到 ChromaDB 后立即清空
+    # 暂存区
     pending_docs = []
     pending_metas = []
     pending_ids = []
     pending_embs = []
 
     def flush_pending():
-        """将暂存区数据写入 ChromaDB 并释放内存"""
+        """将暂存区写入新 collection"""
         nonlocal pending_docs, pending_metas, pending_ids, pending_embs
         if not pending_docs:
-            return
+            return 0
         collection.add(
             documents=pending_docs,
             metadatas=pending_metas,
@@ -267,7 +289,6 @@ def main():
             if not text or len(text.strip()) < 20:
                 print(f"  跳过: 文本过短或为空")
                 stats['skipped'] += 1
-                # 释放文本内存
                 del text
                 continue
 
@@ -275,7 +296,6 @@ def main():
             chunks = chunk_text(text, chunk_size=500, overlap=50)
             print(f"  分割成 {len(chunks)} 个文本块")
 
-            # 低内存：立即释放原始文本
             del text
             gc.collect()
 
@@ -287,11 +307,10 @@ def main():
             else:
                 metadata['category'] = directory.replace(os.path.sep, '/')
 
-            # 生成真实 embeddings
+            # 生成 embeddings
             print(f"  正在生成 {len(chunks)} 个 embedding 向量...")
             embeddings = get_embeddings_batch(chunks)
 
-            # 检查哪些 embedding 失败了
             failed_emb = sum(1 for e in embeddings if e is None)
             if failed_emb > 0:
                 stats['api_errors'] += failed_emb
@@ -299,9 +318,9 @@ def main():
                 import random
                 embeddings = [e if e is not None else [random.uniform(-1, 1) for _ in range(EMBEDDING_DIM)] for e in embeddings]
 
-            # 低内存：暂存而非立即 add，等批量提交
+            # 暂存
             for i, chunk in enumerate(chunks):
-                chunk_id = f"ingest_{filename}_{idx}_{i}_{abs(hash(chunk)) % 1000000}"
+                chunk_id = f"v2_{filename}_{idx}_{i}_{abs(hash(chunk)) % 1000000}"
                 pending_docs.append(chunk)
                 pending_metas.append(metadata.copy())
                 pending_ids.append(chunk_id)
@@ -309,9 +328,8 @@ def main():
 
             stats['success'] += 1
             stats['total_chunks'] += len(chunks)
-            print(f"  成功！已暂存 {len(chunks)} 个文本块（待批量提交）")
+            print(f"  成功！已暂存 {len(chunks)} 个文本块")
 
-            # 低内存：立即释放当前文件的 chunks 和 embeddings
             del chunks, embeddings
             gc.collect()
 
@@ -322,10 +340,11 @@ def main():
             import traceback
             traceback.print_exc()
 
-        # 每 BATCH_COMMIT_SIZE 个文件批量提交并释放内存
-        if stats['success'] > 0 and stats['success'] % BATCH_COMMIT_SIZE == 0:
+        # 批量提交
+        if stats['success'] > 0 and stats['success'] % BATCH_COMMIT_SIZE == 0 and pending_docs:
             flushed = flush_pending()
-            print(f"\n  [批量提交] 已写入 {flushed} 个文本块到向量库")
+            print(f"\n  [批量提交] 写入 {flushed} 个文本块到 {NEW_COLLECTION_NAME}")
+
             # 输出内存使用
             try:
                 import psutil
@@ -335,22 +354,22 @@ def main():
             except ImportError:
                 pass
 
-        # 每50个文件显示一次进度汇总
+        # 进度汇总
         if (idx + 1) % 50 == 0:
             print(f"\n--- 进度: {idx + 1}/{len(files_to_ingest)}, "
                   f"成功: {stats['success']}, 失败: {stats['failed']}, "
                   f"跳过: {stats['skipped']}, 文本块: {stats['total_chunks']} ---")
 
-        # 短暂暂停避免过快
         time.sleep(0.02)
 
-    # 处理结束，提交剩余暂存数据
+    # 提交剩余数据
     if pending_docs:
         flushed = flush_pending()
-        print(f"\n[最终提交] 写入 {flushed} 个文本块到向量库")
+        print(f"\n[最终提交] 写入 {flushed} 个文本块到 {NEW_COLLECTION_NAME}")
 
     # 完成总结
     total_time = time.time() - start_time
+    final_count = collection.count()
     print("\n" + "=" * 80)
     print("摄入完成！")
     print("=" * 80)
@@ -360,7 +379,7 @@ def main():
     print(f"跳过: {stats['skipped']} 个文件")
     print(f"新增文本块: {stats['total_chunks']}")
     print(f"API 错误: {stats['api_errors']} 个 embedding")
-    print(f"向量库总文档数: {collection.count()}")
+    print(f"新 collection 文档数: {final_count}")
     print(f"耗时: {total_time/60:.1f} 分钟")
 
     if stats['errors']:
@@ -375,7 +394,11 @@ def main():
     except Exception:
         pass
 
-    # 更新 existing_sources.json 缓存
+    # 释放 collection
+    del client, collection
+    gc.collect()
+
+    # 更新缓存
     print("\n正在更新 existing_sources.json 缓存...")
     try:
         all_new_sources = set(existing_sources)
@@ -388,6 +411,12 @@ def main():
         print(f"缓存已更新，共 {len(all_new_sources)} 个来源文件")
     except Exception as e:
         print(f"缓存更新失败: {e}")
+
+    # 提示更新查询代码
+    print(f"\n" + "!" * 80)
+    print(f"重要: 新数据已写入 collection '{NEW_COLLECTION_NAME}'")
+    print(f"请在查询代码中同时查询 'medical_device_kb' 和 '{NEW_COLLECTION_NAME}' 两个 collection")
+    print(f"!" * 80)
 
 
 if __name__ == "__main__":

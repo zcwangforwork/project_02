@@ -147,7 +147,7 @@ class VectorStore:
         query_embeddings: Optional[List[List[float]]] = None
     ) -> Dict[str, Any]:
         """
-        查询相似文档
+        查询相似文档（自动合并主 collection 和 v2 collection 的结果）
 
         Args:
             query_texts: 查询文本列表
@@ -157,22 +157,117 @@ class VectorStore:
             query_embeddings: 预计算的查询 embedding 列表（可选）
 
         Returns:
-            查询结果字典
+            查询结果字典（合并两个 collection 的结果，按距离排序）
         """
+        # 查询主 collection
         if query_embeddings is not None:
-            return self.collection.query(
+            main_results = self.collection.query(
                 query_embeddings=query_embeddings,
                 n_results=n_results,
                 where=where,
                 where_document=where_document
             )
         else:
-            return self.collection.query(
+            main_results = self.collection.query(
                 query_texts=query_texts,
                 n_results=n_results,
                 where=where,
                 where_document=where_document
             )
+
+        # 尝试查询 v2 collection
+        v2_results = None
+        try:
+            v2_collection = self.client.get_collection("medical_device_kb_v2")
+            v2_count = v2_collection.count()
+            if v2_count > 0:
+                if query_embeddings is not None:
+                    v2_results = v2_collection.query(
+                        query_embeddings=query_embeddings,
+                        n_results=n_results,
+                        where=where,
+                        where_document=where_document
+                    )
+                else:
+                    v2_results = v2_collection.query(
+                        query_texts=query_texts,
+                        n_results=n_results,
+                        where=where,
+                        where_document=where_document
+                    )
+        except Exception:
+            pass  # v2 collection 不存在，忽略
+
+        # 如果没有 v2 结果，直接返回主结果
+        if v2_results is None or not v2_results.get('documents') or not v2_results['documents'][0]:
+            return main_results
+
+        # 合并两个 collection 的结果，按距离排序
+        return self._merge_query_results(main_results, v2_results, n_results)
+
+    def _merge_query_results(self, main_results: Dict, v2_results: Dict, n_results: int) -> Dict:
+        """
+        合并两个 collection 的查询结果，按距离排序取 top-n
+
+        Args:
+            main_results: 主 collection 查询结果
+            v2_results: v2 collection 查询结果
+            n_results: 最终返回的结果数量
+
+        Returns:
+            合并后的查询结果字典
+        """
+        merged = {
+            'ids': [[]],
+            'documents': [[]],
+            'metadatas': [[]],
+            'distances': [[]]
+        }
+
+        # 收集所有结果
+        all_items = []
+
+        # 主 collection 结果
+        for i in range(len(main_results.get('ids', [[]])[0])):
+            item = {'id': main_results['ids'][0][i]}
+            if 'documents' in main_results and main_results['documents']:
+                item['document'] = main_results['documents'][0][i]
+            if 'metadatas' in main_results and main_results['metadatas']:
+                item['metadata'] = main_results['metadatas'][0][i]
+            else:
+                item['metadata'] = {}
+            if 'distances' in main_results and main_results['distances']:
+                item['distance'] = main_results['distances'][0][i]
+            else:
+                item['distance'] = float('inf')
+            all_items.append(item)
+
+        # v2 collection 结果
+        for i in range(len(v2_results.get('ids', [[]])[0])):
+            item = {'id': v2_results['ids'][0][i]}
+            if 'documents' in v2_results and v2_results['documents']:
+                item['document'] = v2_results['documents'][0][i]
+            if 'metadatas' in v2_results and v2_results['metadatas']:
+                item['metadata'] = v2_results['metadatas'][0][i]
+            else:
+                item['metadata'] = {}
+            if 'distances' in v2_results and v2_results['distances']:
+                item['distance'] = v2_results['distances'][0][i]
+            else:
+                item['distance'] = float('inf')
+            all_items.append(item)
+
+        # 按距离排序
+        all_items.sort(key=lambda x: x['distance'])
+
+        # 取 top-n
+        for item in all_items[:n_results]:
+            merged['ids'][0].append(item['id'])
+            merged['documents'][0].append(item.get('document', ''))
+            merged['metadatas'][0].append(item.get('metadata', {}))
+            merged['distances'][0].append(item.get('distance', float('inf')))
+
+        return merged
 
     def get_all_documents(self, limit: int = 1000) -> Dict[str, Any]:
         """
