@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "E:\nrf_sample_codes\project_0429\project_0428\run_build_kb.py", line 11, in <module>
+    from build_knowledge_base import main
+ModuleNotFoundError: No module named 'build_knowledge_base'
+ERROR conda.cli.main_run:execute(142): `conda run python run_build_kb.py --docs-dir ../develop_documents --rebuild` failed. (See above for error)
