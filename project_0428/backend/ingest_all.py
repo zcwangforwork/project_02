@@ -241,7 +241,7 @@ def main():
     }
 
     start_time = time.time()
-    BATCH_COMMIT_SIZE = 20  # 每20个文件批量提交
+    BATCH_COMMIT_SIZE = 5  # 每5个文件批量提交，避免积累过多chunks
 
     # 暂存区
     pending_docs = []
@@ -249,24 +249,30 @@ def main():
     pending_ids = []
     pending_embs = []
 
+    MAX_CHROMA_BATCH = 40000  # ChromaDB 单次最大批次
+
     def flush_pending():
-        """将暂存区写入新 collection"""
+        """将暂存区写入新 collection（分批提交避免超过最大批次限制）"""
         nonlocal pending_docs, pending_metas, pending_ids, pending_embs
         if not pending_docs:
             return 0
-        collection.add(
-            documents=pending_docs,
-            metadatas=pending_metas,
-            ids=pending_ids,
-            embeddings=pending_embs
-        )
-        chunk_count = len(pending_docs)
+        total = len(pending_docs)
+        written = 0
+        for start in range(0, total, MAX_CHROMA_BATCH):
+            end = min(start + MAX_CHROMA_BATCH, total)
+            collection.add(
+                documents=pending_docs[start:end],
+                metadatas=pending_metas[start:end],
+                ids=pending_ids[start:end],
+                embeddings=pending_embs[start:end]
+            )
+            written += end - start
         pending_docs = []
         pending_metas = []
         pending_ids = []
         pending_embs = []
         gc.collect()
-        return chunk_count
+        return written
 
     for idx, file_info in enumerate(files_to_ingest):
         filename = file_info['filename']

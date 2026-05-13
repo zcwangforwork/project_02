@@ -366,8 +366,8 @@ class RAGRetriever:
         # 将文档分割成段落
         sections = self._split_document_into_sections(user_document)
 
-        # 限制段落数量，最多处理前15个段落以避免上下文过长
-        max_sections = 15
+        # 限制段落数量，最多处理前8个段落以控制上下文长度
+        max_sections = 8
         if len(sections) > max_sections:
             sections = sections[:max_sections]
 
@@ -516,7 +516,7 @@ class RAGRetriever:
             "max_tokens": max_tokens
         }
 
-        async with httpx.AsyncClient(timeout=300, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=600, trust_env=False) as client:
             response = await client.post(
                 self.api_url,
                 headers=headers,

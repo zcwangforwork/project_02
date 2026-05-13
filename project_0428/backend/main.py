@@ -159,7 +159,7 @@ def init_vector_store():
         base_dir = os.path.dirname(os.path.abspath(__file__))
         db_path = os.path.join(base_dir, "data", "chroma_db")
 
-        # 创建 embedding function（使用 1024 维来兼容现有知识库）
+        # 创建 embedding function（查询时用于生成 query embedding）
         embedding_function = MiniMaxEmbeddingFunction(
             api_key=config.api_key,
             api_url=config.embedding_url,
@@ -167,6 +167,8 @@ def init_vector_store():
             dimension=1024
         )
 
+        # 不传 embedding_function 初始化，避免启动时加载大 HNSW 索引
+        # 查询时通过 query_texts 会自动调用 embedding_function
         vector_store = create_vector_store(persist_directory=db_path, embedding_function=embedding_function)
         rag_retriever = create_rag_retriever(
             vector_store=vector_store,
