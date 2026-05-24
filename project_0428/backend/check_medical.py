@@ -23,28 +23,49 @@ def main():
 
     print(f"\n向量库总文档数: {vs.count()}")
 
-    # 获取所有文档
-    print("\n正在获取文档...")
-    all_docs = vs.get_all_documents(limit=20000)
-
-    print(f"实际获取文档数: {len(all_docs.get('ids', []))}")
-
-    # 统计分类
+    # 分页获取所有文档（避免一次性加载20000条导致OOM）
+    print("\n正在分页获取文档...")
     categories = defaultdict(int)
     medical_docs = defaultdict(int)
+    ids_sample = []
+    metadatas_sample = []
+    documents_sample = []
 
-    ids = all_docs.get('ids', [])
-    metadatas = all_docs.get('metadatas', [])
-    documents = all_docs.get('documents', [])
+    total_count = vs.count()
+    page_size = 2000
+    offset = 0
 
-    for i, meta in enumerate(metadatas):
-        if meta:
-            category = meta.get('category', '未知')
-            categories[category] += 1
+    while offset < total_count:
+        batch = vs.collection.get(
+            limit=page_size,
+            offset=offset,
+            include=['documents', 'metadatas']
+        )
+        batch_ids = batch.get('ids', [])
+        batch_metas = batch.get('metadatas', [])
+        batch_docs = batch.get('documents', [])
 
-            if '医械' in category or '标准库' in category:
-                source = meta.get('source', '未知')
-                medical_docs[source] += 1
+        for i, meta in enumerate(batch_metas):
+            if meta:
+                category = meta.get('category', '未知')
+                categories[category] += 1
+                if '医械' in category or '标准库' in category:
+                    source = meta.get('source', '未知')
+                    medical_docs[source] += 1
+
+        if len(ids_sample) < 100:
+            ids_sample.extend(batch_ids[:100 - len(ids_sample)])
+            metadatas_sample.extend(batch_metas[:100 - len(metadatas_sample)])
+            documents_sample.extend(batch_docs[:100 - len(documents_sample)])
+
+        offset += page_size
+        print(f"  已获取 {min(offset, total_count)}/{total_count} 条...")
+
+    print(f"实际获取文档数: {total_count}")
+
+    ids = ids_sample
+    metadatas = metadatas_sample
+    documents = documents_sample
 
     print("\n" + "=" * 70)
     print("所有分类统计:")

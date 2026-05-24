@@ -4,6 +4,7 @@
 """
 import os
 import sys
+import gc
 from pathlib import Path
 import time
 
@@ -127,7 +128,7 @@ def process_directory(
                     # 避免请求过快
                     time.sleep(0.1)
 
-                # 添加到向量库
+                # 添加到向量库（vector_store 内部已分批提交）
                 chunk_ids = []
                 for i, chunk in enumerate(chunks):
                     chunk_id = f"{metadata['source']}_chunk_{i}"
@@ -143,6 +144,10 @@ def process_directory(
                 stats["processed_files"] += 1
                 stats["total_chunks"] += len(chunks)
                 print(f"  成功: {len(chunks)} 个文本块")
+
+                # 逐文件清理内存
+                del text, chunks, embeddings, chunk_ids
+                gc.collect()
 
                 # 避免请求过快
                 time.sleep(0.1)

@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>医疗器械体系文件审核 Agent</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
     <style>
         .chat-container::-webkit-scrollbar {
             width: 6px;
@@ -51,6 +53,31 @@
         .upload-progress {
             transition: width 0.3s ease;
         }
+
+        /* Markdown 渲染样式 */
+        .markdown-body h1 { font-size: 1.5em; font-weight: 700; margin: 0.8em 0 0.4em; color: #e2e8f0; border-bottom: 1px solid #334155; padding-bottom: 0.3em; }
+        .markdown-body h2 { font-size: 1.3em; font-weight: 600; margin: 0.7em 0 0.3em; color: #e2e8f0; }
+        .markdown-body h3 { font-size: 1.15em; font-weight: 600; margin: 0.6em 0 0.3em; color: #cbd5e1; }
+        .markdown-body h4 { font-size: 1.05em; font-weight: 600; margin: 0.5em 0 0.2em; color: #cbd5e1; }
+        .markdown-body p { margin: 0.4em 0; line-height: 1.6; }
+        .markdown-body ul, .markdown-body ol { margin: 0.4em 0; padding-left: 1.5em; }
+        .markdown-body li { margin: 0.2em 0; }
+        .markdown-body table { border-collapse: collapse; margin: 0.6em 0; width: 100%; }
+        .markdown-body th, .markdown-body td { border: 1px solid #475569; padding: 6px 10px; text-align: left; }
+        .markdown-body th { background: #1e293b; font-weight: 600; color: #e2e8f0; }
+        .markdown-body td { color: #cbd5e1; }
+        .markdown-body tr:nth-child(even) td { background: #1e293b; }
+        .markdown-body blockquote { border-left: 3px solid #10b981; margin: 0.5em 0; padding: 0.3em 1em; color: #94a3b8; }
+        .markdown-body code { background: #1e293b; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; color: #10b981; }
+        .markdown-body pre { background: #1e293b; padding: 0.8em; border-radius: 6px; overflow-x: auto; margin: 0.5em 0; }
+        .markdown-body pre code { background: none; padding: 0; }
+        .markdown-body hr { border: none; border-top: 1px solid #334155; margin: 1em 0; }
+        .markdown-body strong { color: #f1f5f9; }
+        .markdown-body em { color: #94a3b8; }
+
+        /* 内容折叠/展开 */
+        .hidden { display: none; }
+        .expand-toggle { cursor: pointer; background: none; border: none; }
     </style>
 </head>
 <body class="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 min-h-screen">
@@ -237,6 +264,11 @@
     </div>
 
     <script>
+        // ===== 内存优化配置 =====
+        const MAX_MESSAGES = 20;        // DOM 中最多保留的消息气泡数
+        const MAX_CONTENT_LENGTH = 2000; // 单条消息最大显示字符数（超出部分折叠）
+        const MARKDOWN_PARSE_TIMEOUT = 50; // markdown 解析超时(ms)，超过则降级为纯文本
+
         let isLoading = false;
         let sessionId = 'session_' + Date.now();
         let selectedFile = null;
@@ -313,53 +345,62 @@
                 ? 'bg-gradient-to-r from-blue-600/80 to-purple-600/80 rounded-2xl rounded-tr-sm'
                 : 'bg-slate-700/50 rounded-2xl rounded-tl-sm';
 
+            // 助手消息使用截断渲染（内存优化），用户消息直接显示
+            const isMarkdown = role === 'assistant';
+            const contentHtml = createTruncatedContent(content, isMarkdown);
+
             messageDiv.innerHTML = `
                 ${avatar}
-                <div class="${bgClass} px-4 py-3 max-w-[80%]">
-                    <p class="text-slate-100 whitespace-pre-wrap">${escapeHtml(content)}</p>
+                <div class="${bgClass} px-4 py-3 max-w-[80%] ${role === 'assistant' ? 'markdown-body' : ''}">
+                    ${contentHtml}
                 </div>
             `;
 
             chatContainer.appendChild(messageDiv);
+
+            // 内存优化：移除超出限制的旧消息
+            trimOldMessages();
+
             scrollToBottom();
         }
 
+        // 大内容分片显示：超过 MAX_CHARS 的助手消息分多条气泡展示
         function splitAndAddMessages(role, content) {
-            const MAX_CHARS = 1500;
+            const MAX_CHARS = 2000;
             if (content.length <= MAX_CHARS) {
                 addMessage(role, content);
                 return;
             }
 
+            // 按双换行分割段落
             const paragraphs = content.split(/\n\n+/);
-            let currentChunk = "";
+            let currentChunk = '';
 
             for (const para of paragraphs) {
                 if (currentChunk.length + para.length + 2 <= MAX_CHARS) {
-                    currentChunk += (currentChunk ? "\n\n" : "") + para;
+                    currentChunk += (currentChunk ? '\n\n' : '') + para;
                 } else {
                     if (currentChunk) {
                         addMessage(role, currentChunk);
                     }
+                    // 超长段落按句子再分割
                     if (para.length > MAX_CHARS) {
                         const sentences = para.split(/(?<=[。！？.!?])/);
-                        currentChunk = "";
+                        let subChunk = '';
                         for (const sent of sentences) {
-                            if (currentChunk.length + sent.length <= MAX_CHARS) {
-                                currentChunk += sent;
+                            if (subChunk.length + sent.length <= MAX_CHARS) {
+                                subChunk += sent;
                             } else {
-                                if (currentChunk) {
-                                    addMessage(role, currentChunk);
-                                }
-                                currentChunk = sent;
+                                if (subChunk) addMessage(role, subChunk);
+                                subChunk = sent;
                             }
                         }
+                        if (subChunk.trim()) addMessage(role, subChunk);
                     } else {
                         currentChunk = para;
                     }
                 }
             }
-
             if (currentChunk.trim()) {
                 addMessage(role, currentChunk);
             }
@@ -400,6 +441,117 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // 内存优化：移除超出限制的旧消息
+        function trimOldMessages() {
+            const messages = chatContainer.querySelectorAll('.message-enter');
+            if (messages.length > MAX_MESSAGES) {
+                const removeCount = messages.length - MAX_MESSAGES;
+                for (let i = 0; i < removeCount; i++) {
+                    messages[i].remove();
+                }
+            }
+        }
+
+        // 安全的 markdown 解析：带超时保护，避免大内容阻塞主线程
+        function safeMarkdownParse(text) {
+            const startTime = performance.now();
+            try {
+                // 对于超大内容，不使用 markdown 解析以避免浏览器 OOM
+                if (text.length > 5000) {
+                    return `<p class="text-slate-100 whitespace-pre-wrap">${escapeHtml(text)}</p>`;
+                }
+                const rawHtml = marked.parse(text, { breaks: true });
+                // 检查解析是否超时
+                if (performance.now() - startTime > MARKDOWN_PARSE_TIMEOUT) {
+                    // 已超时，回退到纯文本
+                    throw new Error('Markdown parse timeout');
+                }
+                // DOMPurify 也可能很慢，对大 HTML 进行限制
+                if (rawHtml.length > 50000) {
+                    return `<p class="text-slate-100 whitespace-pre-wrap">${escapeHtml(text)}</p>`;
+                }
+                return DOMPurify.sanitize(rawHtml);
+            } catch (e) {
+                return `<p class="text-slate-100 whitespace-pre-wrap">${escapeHtml(text)}</p>`;
+            }
+        }
+
+        // 内存优化：内容截断 + 延迟 markdown 渲染 + "展开/收起" 切换
+        function createTruncatedContent(rawContent, isMarkdown) {
+            if (rawContent.length <= MAX_CONTENT_LENGTH) {
+                if (isMarkdown) {
+                    return safeMarkdownParse(rawContent);
+                }
+                return `<p class="text-slate-100 whitespace-pre-wrap">${escapeHtml(rawContent)}</p>`;
+            }
+
+            // 需要截断：可见部分立即渲染，隐藏部分延迟渲染
+            const visiblePart = rawContent.slice(0, MAX_CONTENT_LENGTH);
+            const hiddenPart = rawContent.slice(MAX_CONTENT_LENGTH);
+            const uniqueId = 'expand_' + Math.random().toString(36).substr(2, 9);
+
+            // 可见部分：正常渲染
+            const visibleHtml = isMarkdown
+                ? safeMarkdownParse(visiblePart)
+                : `<p class="text-slate-100 whitespace-pre-wrap">${escapeHtml(visiblePart)}</p>`;
+
+            // 隐藏部分：存储原始文本（不预渲染 markdown，点击展开时才渲染）
+            const truncatedLength = rawContent.length - MAX_CONTENT_LENGTH;
+            return `
+                <div class="truncated-content" data-hidden-text="${escapeHtml(hiddenPart)}" data-is-markdown="${isMarkdown ? '1' : '0'}" data-unique-id="${uniqueId}">
+                    <div class="visible-part">${visibleHtml}</div>
+                    <div id="${uniqueId}_hidden" class="hidden-part hidden"></div>
+                    <button
+                        class="expand-toggle mt-2 text-emerald-400 hover:text-emerald-300 text-sm font-medium focus:outline-none"
+                        onclick="toggleContent('${uniqueId}', this)"
+                        data-expanded="false"
+                    >
+                        📄 展开剩余内容 (${Math.ceil(truncatedLength / 1000)}k 字符)
+                    </button>
+                </div>
+            `;
+        }
+
+        // 展开/收起切换（延迟渲染：展开时才解析 markdown）
+        function toggleContent(uniqueId, btn) {
+            const hiddenDiv = document.getElementById(uniqueId + '_hidden');
+            const isExpanded = btn.getAttribute('data-expanded') === 'true';
+            if (isExpanded) {
+                // 收起：清空隐藏部分 DOM 以释放内存
+                hiddenDiv.innerHTML = '';
+                hiddenDiv.classList.add('hidden');
+                btn.setAttribute('data-expanded', 'false');
+                const truncatedBlock = btn.closest('.truncated-content');
+                const truncatedLen = truncatedBlock ? truncatedBlock.dataset.hiddenText.length : 0;
+                btn.innerHTML = `📄 展开剩余内容 (${Math.ceil(truncatedLen / 1000)}k 字符)`;
+            } else {
+                // 展开：延迟渲染 markdown（使用 requestAnimationFrame 避免阻塞）
+                btn.setAttribute('data-expanded', 'true');
+                btn.innerHTML = '📄 收起';
+                hiddenDiv.classList.remove('hidden');
+
+                const truncatedBlock = btn.closest('.truncated-content');
+                const hiddenText = truncatedBlock ? truncatedBlock.dataset.hiddenText : '';
+                const isMarkdown = truncatedBlock && truncatedBlock.dataset.isMarkdown === '1';
+
+                // 使用 requestAnimationFrame 分帧渲染，避免阻塞主线程
+                requestAnimationFrame(() => {
+                    const decoded = hiddenText.replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+                        .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'");
+                    if (isMarkdown) {
+                        // 对展开内容也进行大小限制
+                        if (decoded.length > 8000) {
+                            hiddenDiv.innerHTML = `<p class="text-slate-100 whitespace-pre-wrap">${escapeHtml(decoded)}</p>`;
+                        } else {
+                            hiddenDiv.innerHTML = safeMarkdownParse(decoded);
+                        }
+                    } else {
+                        hiddenDiv.innerHTML = `<p class="text-slate-100 whitespace-pre-wrap">${escapeHtml(decoded)}</p>`;
+                    }
+                });
+            }
         }
 
         function setLoading(loading) {

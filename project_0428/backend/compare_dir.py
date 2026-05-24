@@ -56,18 +56,25 @@ def main():
     vs = create_vector_store(persist_directory="data/chroma_db")
     print(f"向量库总文档数: {vs.count()} 个文本块\n")
 
-    # 获取向量库中的所有文档
-    print("正在获取向量库中的文档信息...")
-    all_docs = vs.get_all_documents(limit=100000)
-
-    # 统计向量库中的来源
+    # 分页获取向量库中的文档信息（避免一次性加载100000条导致OOM）
+    print("正在分页获取向量库中的文档信息...")
     sources_in_db = defaultdict(int)
-    metadatas = all_docs.get('metadatas', [])
 
-    for meta in metadatas:
-        if meta:
-            source = meta.get('source', '未知')
-            sources_in_db[source] += 1
+    total_count = vs.count()
+    page_size = 2000
+    offset = 0
+    while offset < total_count:
+        batch = vs.collection.get(
+            limit=page_size,
+            offset=offset,
+            include=['metadatas']
+        )
+        for meta in batch.get('metadatas', []):
+            if meta:
+                source = meta.get('source', '未知')
+                sources_in_db[source] += 1
+        offset += page_size
+        print(f"  已获取 {min(offset, total_count)}/{total_count} 条...")
 
     print(f"向量库中有 {len(sources_in_db)} 个不同的来源文件\n")
 

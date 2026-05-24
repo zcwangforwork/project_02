@@ -2,6 +2,7 @@
 """重新构建知识库，添加医械标准库目录"""
 import os
 import sys
+import gc
 from pathlib import Path
 import time
 
@@ -118,6 +119,10 @@ def process_directory(directory: str, vector_store, api_key: str, api_url: str, 
                 stats["processed_files"] += 1
                 stats["total_chunks"] += len(chunks)
                 print(f"  成功添加: {len(chunks)} 个文本块")
+
+                # 逐文件清理内存
+                del text, chunks, embeddings, chunk_ids
+                gc.collect()
 
                 time.sleep(0.05)
 

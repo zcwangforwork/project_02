@@ -3,9 +3,28 @@
 使用 ChromaDB 管理知识库向量，支持本地持久化
 """
 import os
+import sqlite3 as _sqlite3
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 import httpx
+
+# ===== SQLite 内存限制 Monkey-Patch =====
+# 拦截所有 sqlite3 连接并在打开后应用内存限制 PRAGMA，
+# 避免 ChromaDB 的 2.8GB 数据库将大量数据加载到内存中导致 OOM
+_original_connect = _sqlite3.connect
+
+def _patched_connect(database, *args, **kwargs):
+    conn = _original_connect(database, *args, **kwargs)
+    try:
+        conn.execute("PRAGMA cache_size = -4000")       # 缓存限制 4MB
+        conn.execute("PRAGMA mmap_size = 0")             # 禁用内存映射
+        conn.execute("PRAGMA temp_store = FILE")         # 临时数据写入文件
+        conn.execute("PRAGMA synchronous = NORMAL")      # 减少同步开销
+    except Exception:
+        pass
+    return conn
+
+_sqlite3.connect = _patched_connect
 
 
 class MiniMaxEmbeddingFunction:
@@ -65,6 +84,11 @@ class MiniMaxEmbeddingFunction:
 class VectorStore:
     """ChromaDB 向量存储管理类"""
 
+    # 查询时使用的目标 collection 列表（优先级从高到低）
+    # 仅查询 v2 collection，跳过主 collection 以避免加载其 2.8GB HNSW 索引到内存
+    # 如果你需要主 collection 的数据，先运行 ingest_all.py 将其导入到 v2 collection
+    QUERY_COLLECTIONS = ["medical_device_kb_v2"]
+
     def __init__(self, persist_directory: str = "data/chroma_db", embedding_function=None):
         """
         初始化向量存储
@@ -87,17 +111,33 @@ class VectorStore:
         # 确保目录存在
         os.makedirs(self.persist_directory, exist_ok=True)
 
-        # 初始化 ChromaDB 客户端
+        # 初始化 ChromaDB 客户端（添加内存优化设置）
         self.client = chromadb.PersistentClient(
             path=self.persist_directory,
             settings=Settings(anonymized_telemetry=False)
         )
 
         # 获取主 collection（不传 embedding_function，避免初始化时加载 HNSW 索引）
-        self.collection = self.client.get_or_create_collection(
-            name=self.collection_name,
-            metadata={"description": "医疗器械体系文件知识库"}
-        )
+        # 主 collection 仅用于写入/计数等操作，查询走 QUERY_COLLECTIONS 列表
+        try:
+            self.collection = self.client.get_collection(
+                name=self.collection_name,
+            )
+        except Exception:
+            self.collection = self.client.create_collection(
+                name=self.collection_name,
+                metadata={
+                    "description": "医疗器械体系文件知识库",
+                    "hnsw:space": "cosine",
+                    # HNSW 内存优化参数：
+                    # M=4 相比默认16降低75%边存储，是 RAG 场景可接受的最低值
+                    "hnsw:M": 4,
+                    # construction_ef 仅影响构建时的索引质量，降低可减少构建内存峰值
+                    "hnsw:construction_ef": 50,
+                    # search_ef 影响查询精度，30 在召回率与内存间取得平衡
+                    "hnsw:search_ef": 30,
+                }
+            )
 
     def add_documents(
         self,
@@ -107,7 +147,7 @@ class VectorStore:
         embeddings: Optional[List[List[float]]] = None
     ) -> List[str]:
         """
-        添加文档到向量库
+        添加文档到向量库（自动分批，避免单次提交过大导致 ChromaDB OOM）
 
         Args:
             documents: 文档文本列表
@@ -121,19 +161,24 @@ class VectorStore:
         if ids is None:
             ids = [f"doc_{i}_{hash(text) % 100000}" for i, text in enumerate(documents)]
 
-        if embeddings is not None:
-            self.collection.add(
-                embeddings=embeddings,
-                metadatas=metadatas,
-                documents=documents,
-                ids=ids
-            )
-        else:
-            self.collection.add(
-                documents=documents,
-                metadatas=metadatas,
-                ids=ids
-            )
+        total = len(documents)
+        batch_size = 500  # 每批最多500条，避免 ChromaDB 内存溢出
+
+        for start in range(0, total, batch_size):
+            end = min(start + batch_size, total)
+            if embeddings is not None:
+                self.collection.add(
+                    embeddings=embeddings[start:end],
+                    metadatas=metadatas[start:end],
+                    documents=documents[start:end],
+                    ids=ids[start:end]
+                )
+            else:
+                self.collection.add(
+                    documents=documents[start:end],
+                    metadatas=metadatas[start:end],
+                    ids=ids[start:end]
+                )
 
         return ids
 
@@ -164,11 +209,10 @@ class VectorStore:
         query_embeddings: Optional[List[List[float]]] = None
     ) -> Dict[str, Any]:
         """
-        查询相似文档（自动合并 v2 collection 和主 collection 的结果）
+        查询相似文档（从 QUERY_COLLECTIONS 列表中的 collection 检索并合并结果）
 
-        优先查询 v2 collection（数据量大且可加载），主 collection 作为回退。
-        使用 embedding_function 手动生成 query embedding，避免 ChromaDB 默认
-        embedding function 的维度不匹配问题。
+        仅查询 QUERY_COLLECTIONS 中配置的 collection（默认仅 v2），
+        跳过主 collection 以避免加载其大型 HNSW 索引到内存。
 
         Args:
             query_texts: 查询文本列表
@@ -178,53 +222,62 @@ class VectorStore:
             query_embeddings: 预计算的查询 embedding 列表（可选）
 
         Returns:
-            查询结果字典（合并两个 collection 的结果，按距离排序）
+            查询结果字典
         """
         # 如果没有预计算的 embedding，使用 embedding_function 生成
         if query_embeddings is None and query_texts is not None:
             query_embeddings = self._get_query_embeddings(query_texts)
 
-        # 构建 query_embeddings 优先的查询参数
+        # 限制每次查询返回结果数，避免加载过多 HNSW 索引数据
+        safe_n_results = min(n_results, 10)
+
+        # 构建查询参数
         if query_embeddings is not None:
             query_kwargs = {
                 "query_embeddings": query_embeddings,
-                "n_results": n_results,
+                "n_results": safe_n_results,
                 "where": where,
                 "where_document": where_document,
             }
         else:
-            # 如果没有 embedding 也没有 embedding_function，回退到 query_texts
             query_kwargs = {
                 "query_texts": query_texts,
-                "n_results": n_results,
+                "n_results": safe_n_results,
                 "where": where,
                 "where_document": where_document,
             }
 
-        # 优先查询 v2 collection（数据量更大，HNSW 索引可加载）
-        v2_results = None
-        try:
-            v2_collection = self.client.get_collection("medical_device_kb_v2")
-            v2_count = v2_collection.count()
-            if v2_count > 0:
-                v2_results = v2_collection.query(**query_kwargs)
-        except Exception as e:
-            print(f"查询 v2 collection 失败: {e}")
+        # 遍历 QUERY_COLLECTIONS 列表，收集各 collection 的检索结果
+        all_items = []
 
-        # 尝试查询主 collection（可能因 HNSW 内存不足而失败）
-        main_results = None
-        try:
-            main_results = self.collection.query(**query_kwargs)
-        except RuntimeError as e:
-            if "Not enough memory" in str(e):
-                print(f"主 collection 查询跳过（HNSW 内存不足）")
-            else:
-                raise
-        except Exception as e:
-            print(f"主 collection 查询失败: {e}")
+        for coll_name in self.QUERY_COLLECTIONS:
+            try:
+                coll = self.client.get_collection(coll_name)
+                coll_count = coll.count()
+                if coll_count == 0:
+                    print(f"[VectorStore] 跳过空 collection: {coll_name}")
+                    continue
+                results = coll.query(**query_kwargs)
+                if results and results.get('ids') and results['ids'][0]:
+                    for i in range(len(results['ids'][0])):
+                        item = {'id': results['ids'][0][i]}
+                        if 'documents' in results and results['documents']:
+                            item['document'] = results['documents'][0][i]
+                        if 'metadatas' in results and results['metadatas']:
+                            item['metadata'] = results['metadatas'][0][i]
+                        else:
+                            item['metadata'] = {}
+                        if 'distances' in results and results['distances']:
+                            item['distance'] = results['distances'][0][i]
+                        else:
+                            item['distance'] = float('inf')
+                        all_items.append(item)
+            except Exception as e:
+                print(f"[VectorStore] 查询 collection '{coll_name}' 失败: {e}")
+                continue
 
-        # 如果都没有结果，返回空
-        if v2_results is None and main_results is None:
+        # 如果没有结果，返回空
+        if not all_items:
             return {
                 'ids': [[]],
                 'documents': [[]],
@@ -232,27 +285,9 @@ class VectorStore:
                 'distances': [[]]
             }
 
-        # 只有一个有结果时直接返回
-        if v2_results is None or not v2_results.get('documents') or not v2_results['documents'][0]:
-            return main_results
-        if main_results is None or not main_results.get('documents') or not main_results['documents'][0]:
-            return v2_results
+        # 按距离排序，取 top-n
+        all_items.sort(key=lambda x: x['distance'])
 
-        # 合并两个 collection 的结果，按距离排序
-        return self._merge_query_results(main_results, v2_results, n_results)
-
-    def _merge_query_results(self, main_results: Dict, v2_results: Dict, n_results: int) -> Dict:
-        """
-        合并两个 collection 的查询结果，按距离排序取 top-n
-
-        Args:
-            main_results: 主 collection 查询结果
-            v2_results: v2 collection 查询结果
-            n_results: 最终返回的结果数量
-
-        Returns:
-            合并后的查询结果字典
-        """
         merged = {
             'ids': [[]],
             'documents': [[]],
@@ -260,43 +295,6 @@ class VectorStore:
             'distances': [[]]
         }
 
-        # 收集所有结果
-        all_items = []
-
-        # 主 collection 结果
-        for i in range(len(main_results.get('ids', [[]])[0])):
-            item = {'id': main_results['ids'][0][i]}
-            if 'documents' in main_results and main_results['documents']:
-                item['document'] = main_results['documents'][0][i]
-            if 'metadatas' in main_results and main_results['metadatas']:
-                item['metadata'] = main_results['metadatas'][0][i]
-            else:
-                item['metadata'] = {}
-            if 'distances' in main_results and main_results['distances']:
-                item['distance'] = main_results['distances'][0][i]
-            else:
-                item['distance'] = float('inf')
-            all_items.append(item)
-
-        # v2 collection 结果
-        for i in range(len(v2_results.get('ids', [[]])[0])):
-            item = {'id': v2_results['ids'][0][i]}
-            if 'documents' in v2_results and v2_results['documents']:
-                item['document'] = v2_results['documents'][0][i]
-            if 'metadatas' in v2_results and v2_results['metadatas']:
-                item['metadata'] = v2_results['metadatas'][0][i]
-            else:
-                item['metadata'] = {}
-            if 'distances' in v2_results and v2_results['distances']:
-                item['distance'] = v2_results['distances'][0][i]
-            else:
-                item['distance'] = float('inf')
-            all_items.append(item)
-
-        # 按距离排序
-        all_items.sort(key=lambda x: x['distance'])
-
-        # 取 top-n
         for item in all_items[:n_results]:
             merged['ids'][0].append(item['id'])
             merged['documents'][0].append(item.get('document', ''))
@@ -323,8 +321,17 @@ class VectorStore:
         self.client.delete_collection(name=self.collection_name)
 
     def count(self) -> int:
-        """返回 collection 中的文档数量"""
-        return self.collection.count()
+        """返回所有查询 collection 中的文档块总数"""
+        total = 0
+        for coll_name in self.QUERY_COLLECTIONS:
+            try:
+                coll = self.client.get_collection(coll_name)
+                total += coll.count()
+            except Exception:
+                continue
+        if total == 0:
+            return self.collection.count()
+        return total
 
 
 def create_vector_store(persist_directory: str = "data/chroma_db", embedding_function=None) -> VectorStore:

@@ -36,24 +36,39 @@ def main():
 
     print(f"\n向量库中文档总数: {vs.count()}")
 
-    # 获取所有文档
-    print("\n正在获取所有文档（可能需要一些时间）...")
-    all_docs = vs.get_all_documents(limit=10000)
-
-    print(f"\n实际获取到的文档数: {len(all_docs.get('ids', []))}")
-
-    # 统计来源文件
+    # 分页获取所有文档（避免一次性加载10000条导致OOM）
+    print("\n正在分页获取所有文档...")
     sources = {}
     categories = {}
+    ids_sample = []
+    documents_sample = []
+    metadatas_sample = []
 
-    metadatas = all_docs.get('metadatas', [])
-    for meta in metadatas:
-        if meta:
-            source = meta.get('source', '未知')
-            category = meta.get('category', '未知')
+    total_count = vs.count()
+    page_size = 2000
+    offset = 0
+    while offset < total_count:
+        batch = vs.collection.get(
+            limit=page_size,
+            offset=offset,
+            include=['documents', 'metadatas']
+        )
+        batch_metas = batch.get('metadatas', [])
+        for meta in batch_metas:
+            if meta:
+                source = meta.get('source', '未知')
+                category = meta.get('category', '未知')
+                sources[source] = sources.get(source, 0) + 1
+                categories[category] = categories.get(category, 0) + 1
 
-            sources[source] = sources.get(source, 0) + 1
-            categories[category] = categories.get(category, 0) + 1
+        if len(ids_sample) < 10:
+            ids_sample.extend(batch.get('ids', [])[:10 - len(ids_sample)])
+            metadatas_sample.extend(batch_metas[:10 - len(metadatas_sample)])
+            documents_sample.extend(batch.get('documents', [])[:10 - len(documents_sample)])
+
+        offset += page_size
+
+    print(f"\n实际获取到的文档数: {total_count}")
 
     print("\n" + "=" * 70)
     print("文档来源统计:")
@@ -89,17 +104,13 @@ def main():
     print("文档预览（前10个）:")
     print("=" * 70)
 
-    ids = all_docs.get('ids', [])
-    documents = all_docs.get('documents', [])
-    metadatas = all_docs.get('metadatas', [])
-
-    for i in range(min(10, len(ids))):
-        print(f"\n{i+1}. ID: {ids[i]}")
-        if i < len(metadatas) and metadatas[i]:
-            print(f"   来源: {metadatas[i].get('source', '未知')}")
-            print(f"   分类: {metadatas[i].get('category', '未知')}")
-        if i < len(documents) and documents[i]:
-            preview = documents[i][:200].replace('\n', ' ')
+    for i in range(min(10, len(ids_sample))):
+        print(f"\n{i+1}. ID: {ids_sample[i]}")
+        if i < len(metadatas_sample) and metadatas_sample[i]:
+            print(f"   来源: {metadatas_sample[i].get('source', '未知')}")
+            print(f"   分类: {metadatas_sample[i].get('category', '未知')}")
+        if i < len(documents_sample) and documents_sample[i]:
+            preview = documents_sample[i][:200].replace('\n', ' ')
             print(f"   内容预览: {preview}...")
 
     print("\n" + "=" * 70)

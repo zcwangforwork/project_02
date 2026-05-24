@@ -18,21 +18,53 @@ def main():
     # 创建向量存储
     vs = create_vector_store(persist_directory="data/chroma_db")
 
-    print(f"\n向量库总文档数: {vs.count()}")
+    total_count = vs.count()
+    print(f"\n向量库总文档数: {total_count}")
 
-    # 获取所有文档
-    print("\n正在获取文档...")
-    all_docs = vs.get_all_documents(limit=30000)
-
-    print(f"实际获取文档数: {len(all_docs.get('ids', []))}")
-
-    # 统计
+    # 分页获取所有文档，避免一次性加载过多导致 OOM
+    print("\n正在分页获取文档...")
     sources = defaultdict(int)
     categories = defaultdict(int)
+    ids_sample = []
+    metadatas_sample = []
+    documents_sample = []
 
-    ids = all_docs.get('ids', [])
-    metadatas = all_docs.get('metadatas', [])
-    documents = all_docs.get('documents', [])
+    page_size = 2000  # 每页2000条，降低内存压力
+    offset = 0
+    total_fetched = 0
+
+    while offset < total_count:
+        batch = vs.collection.get(
+            limit=page_size,
+            offset=offset,
+            include=['documents', 'metadatas']
+        )
+        batch_ids = batch.get('ids', [])
+        batch_metas = batch.get('metadatas', [])
+        batch_docs = batch.get('documents', [])
+
+        for i, meta in enumerate(batch_metas):
+            if meta:
+                source = meta.get('source', '未知')
+                category = meta.get('category', '未知')
+                sources[source] += 1
+                categories[category] += 1
+
+        # 保留前100条样本用于预览
+        if len(ids_sample) < 100:
+            ids_sample.extend(batch_ids[:100 - len(ids_sample)])
+            metadatas_sample.extend(batch_metas[:100 - len(metadatas_sample)])
+            documents_sample.extend(batch_docs[:100 - len(documents_sample)])
+
+        total_fetched += len(batch_ids)
+        offset += page_size
+        print(f"  已获取 {min(total_fetched, total_count)}/{total_count} 条...")
+
+    print(f"实际获取文档数: {total_fetched}")
+
+    ids = ids_sample
+    metadatas = metadatas_sample
+    documents = documents_sample
 
     print("\n正在统计...")
     for i, meta in enumerate(metadatas):

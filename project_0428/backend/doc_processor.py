@@ -1,44 +1,167 @@
 """
 医疗器械体系文件审核 - 文档处理模块
 支持 Word (.docx) 和 PDF 文件的文本提取与分块
+输出结构化 Markdown，保留标题层级、表格、列表
 """
 import os
+import re
 from typing import List, Tuple
 from pathlib import Path
 
 
+# ============== Word 标题样式到 Markdown 层级映射 ==============
+HEADING_STYLE_MAP = {
+    'heading 1': 1, 'heading 2': 2, 'heading 3': 3,
+    'heading 4': 4, 'heading 5': 5, 'heading 6': 6,
+    '标题 1': 1, '标题 2': 2, '标题 3': 3,
+    '标题 4': 4, '标题 5': 5, '标题 6': 6,
+    'title': 1,
+}
+
+
 def extract_text_from_docx(file_path: str) -> str:
     """
-    从 Word 文档提取文本内容
+    从 Word 文档提取结构化 Markdown 文本
+
+    保留标题层级（#/##/###）、表格、列表，供 LLM 理解文档结构
 
     Args:
         file_path: .docx 文件路径
 
     Returns:
-        提取的文本内容
+        结构化 Markdown 文本
     """
     try:
         from docx import Document
         doc = Document(file_path)
-        paragraphs = []
-        for para in doc.paragraphs:
-            text = para.text.strip()
-            if text:
-                paragraphs.append(text)
-        return '\n'.join(paragraphs)
+        parts = []
+
+        # 构建 element -> paragraph 的快速查找映射（O(1) 替代原 O(n²) 循环）
+        elem_to_para = {}
+        for p in doc.paragraphs:
+            try:
+                elem_to_para[id(p._element)] = p
+            except Exception:
+                pass
+
+        for element in doc.element.body:
+            tag = element.tag.split('}')[-1] if '}' in element.tag else element.tag
+
+            if tag == 'p':
+                # 段落处理 - O(1) 查找
+                para = elem_to_para.get(id(element))
+                if para is None:
+                    continue
+
+                text = para.text.strip()
+                if not text:
+                    parts.append('')
+                    continue
+
+                # 检测标题样式
+                style_name = (para.style.name or '').lower() if para.style else ''
+                heading_level = HEADING_STYLE_MAP.get(style_name, 0)
+
+                if heading_level > 0:
+                    parts.append(f'{"#" * heading_level} {text}')
+                elif _is_list_paragraph(para):
+                    parts.append(_format_list_item(para, text))
+                else:
+                    parts.append(text)
+
+            elif tag == 'tbl':
+                # 表格处理
+                table_md = _extract_table_from_element(element, doc)
+                if table_md:
+                    parts.append('')
+                    parts.append(table_md)
+                    parts.append('')
+
+        return '\n'.join(parts)
     except ImportError:
         raise ImportError("请安装 python-docx: pip install python-docx")
 
 
+def _is_list_paragraph(para) -> bool:
+    """判断段落是否为列表项"""
+    style_name = (para.style.name or '').lower() if para.style else ''
+    list_keywords = ['list', 'listparagraph', '列表']
+    return any(kw in style_name for kw in list_keywords)
+
+
+def _format_list_item(para, text: str) -> str:
+    """格式化列表项为 Markdown"""
+    style_name = (para.style.name or '').lower() if para.style else ''
+    # 判断有序/无序
+    if 'number' in style_name or re.match(r'^\d+[.、）)]', text):
+        # 有序列表：提取数字前缀或自动编号
+        match = re.match(r'^(\d+)[.、）)]\s*', text)
+        if match:
+            return f"{match.group(1)}. {text[match.end():]}"
+        return f"1. {text}"
+    else:
+        return f"- {text}"
+
+
+def _extract_table_from_element(table_element, doc) -> str:
+    """从 XML 元素提取表格并转为 Markdown 格式"""
+    rows = []
+    for row_elem in table_element.iterchildren():
+        tag = row_elem.tag.split('}')[-1] if '}' in row_elem.tag else row_elem.tag
+        if tag != 'tr':
+            continue
+        cells = []
+        for cell_elem in row_elem.iterchildren():
+            cell_tag = cell_elem.tag.split('}')[-1] if '}' in cell_elem.tag else cell_elem.tag
+            if cell_tag != 'tc':
+                continue
+            # 提取单元格文本
+            cell_text_parts = []
+            for p_elem in cell_elem.iterchildren():
+                p_tag = p_elem.tag.split('}')[-1] if '}' in p_elem.tag else p_elem.tag
+                if p_tag == 'p':
+                    texts = []
+                    for t_elem in p_elem.iter():
+                        t_tag = t_elem.tag.split('}')[-1] if '}' in t_elem.tag else t_elem.tag
+                        if t_tag == 't':
+                            texts.append(t_elem.text or '')
+                    cell_text_parts.append(''.join(texts).strip())
+            cells.append(' | '.join(cell_text_parts) if cell_text_parts else ' ')
+
+        if cells:
+            rows.append(cells)
+
+    if not rows:
+        return ''
+
+    # 统一列数
+    max_cols = max(len(r) for r in rows) if rows else 0
+    for r in rows:
+        while len(r) < max_cols:
+            r.append(' ')
+
+    # 构建 Markdown 表格
+    md_lines = []
+    # 表头
+    md_lines.append('| ' + ' | '.join(rows[0]) + ' |')
+    # 分隔行
+    md_lines.append('| ' + ' | '.join(['---'] * max_cols) + ' |')
+    # 数据行
+    for row in rows[1:]:
+        md_lines.append('| ' + ' | '.join(row) + ' |')
+
+    return '\n'.join(md_lines)
+
+
 def extract_text_from_pdf(file_path: str) -> str:
     """
-    从 PDF 文件提取文本内容
+    从 PDF 文件提取文本内容，尝试用字体大小识别标题层级
 
     Args:
         file_path: .pdf 文件路径
 
     Returns:
-        提取的文本内容
+        结构化 Markdown 文本
     """
     try:
         import pdfplumber
@@ -46,11 +169,83 @@ def extract_text_from_pdf(file_path: str) -> str:
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
                 text = page.extract_text()
-                if text:
-                    text_parts.append(text)
+                if not text:
+                    continue
+
+                # 尝试提取字体信息来识别标题
+                chars = page.chars
+                if chars:
+                    text = _pdf_text_with_headings(text, chars)
+
+                text_parts.append(text)
         return '\n'.join(text_parts)
     except ImportError:
         raise ImportError("请安装 pdfplumber: pip install pdfplumber")
+
+
+def _pdf_text_with_headings(text: str, chars: list) -> str:
+    """
+    根据 PDF 字符的字体大小，启发式识别标题并转为 Markdown
+
+    逻辑：统计所有字体大小，最大的视为标题层级
+    """
+    if not chars:
+        return text
+
+    # 统计字体大小分布
+    size_count = {}
+    for c in chars:
+        size = round(c.get('size', 0), 1)
+        if size > 0:
+            size_count[size] = size_count.get(size, 0) + len(c.get('text', ''))
+
+    if not size_count:
+        return text
+
+    # 按大小降序排列，前3个尺寸视为标题
+    sorted_sizes = sorted(size_count.keys(), reverse=True)
+    body_size = sorted_sizes[-1] if sorted_sizes else 10.0  # 最小的通常是正文
+
+    heading_map = {}
+    heading_level = 1
+    for size in sorted_sizes:
+        if size > body_size * 1.15 and heading_level <= 3:  # 比正文大15%以上视为标题
+            heading_map[size] = heading_level
+            heading_level += 1
+        else:
+            break
+
+    if not heading_map:
+        return text
+
+    # 按行处理，识别标题行
+    lines = text.split('\n')
+    result = []
+    for line in lines:
+        line_stripped = line.strip()
+        if not line_stripped:
+            result.append('')
+            continue
+
+        # 检查该行是否主要是大字体
+        line_chars = [c for c in chars if c.get('text', '').strip()
+                      and c['text'].strip() in line_stripped]
+        if line_chars:
+            # 取该行最多的字体大小
+            line_sizes = {}
+            for c in line_chars:
+                s = round(c.get('size', 0), 1)
+                line_sizes[s] = line_sizes.get(s, 0) + 1
+            dominant_size = max(line_sizes, key=line_sizes.get) if line_sizes else 0
+
+            if dominant_size in heading_map:
+                level = heading_map[dominant_size]
+                result.append(f'{"#" * level} {line_stripped}')
+                continue
+
+        result.append(line_stripped)
+
+    return '\n'.join(result)
 
 
 def extract_text_from_doc(file_path: str) -> str:
@@ -142,13 +337,13 @@ def extract_text_from_txt(file_path: str) -> str:
 
 def extract_text(file_path: str) -> str:
     """
-    根据文件扩展名自动识别并提取文本
+    根据文件扩展名自动识别并提取文本（结构化 Markdown 格式）
 
     Args:
         file_path: 文件路径
 
     Returns:
-        提取的文本内容
+        结构化 Markdown 文本
     """
     ext = Path(file_path).suffix.lower()
     if ext == '.docx':
@@ -161,6 +356,51 @@ def extract_text(file_path: str) -> str:
         return extract_text_from_txt(file_path)
     else:
         raise ValueError(f"不支持的文件格式: {ext}，仅支持 .docx, .doc, .pdf 和 .txt")
+
+
+def split_by_markdown_headers(text: str) -> List[Tuple[str, str, int]]:
+    """
+    按 Markdown 标题层级分割文档
+
+    Args:
+        text: Markdown 格式的文档文本
+
+    Returns:
+        [(标题, 内容, 层级), ...] 段落列表
+        层级: 1=一级标题, 2=二级标题, 3=三级标题...
+    """
+    sections = []
+    current_title = "文档开头"
+    current_level = 0
+    current_content = []
+
+    for line in text.split('\n'):
+        # 检测 Markdown 标题行
+        match = re.match(r'^(#{1,6})\s+(.+)$', line.strip())
+        if match:
+            # 保存前一个段落
+            if current_content:
+                full_content = '\n'.join(current_content).strip()
+                if full_content:
+                    sections.append((current_title, full_content, current_level))
+
+            current_level = len(match.group(1))
+            current_title = match.group(2).strip()
+            current_content = []
+        else:
+            current_content.append(line)
+
+    # 保存最后一个段落
+    if current_content:
+        full_content = '\n'.join(current_content).strip()
+        if full_content:
+            sections.append((current_title, full_content, current_level))
+
+    # 如果没有检测到任何标题，把整篇文档作为一个段落
+    if not sections and text.strip():
+        sections.append(("完整文档", text.strip(), 0))
+
+    return sections
 
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:

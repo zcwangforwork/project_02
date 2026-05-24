@@ -2,6 +2,7 @@
 """构建所有医械标准库文档，带详细进度"""
 import os
 import sys
+import gc
 from pathlib import Path
 import random
 
@@ -102,6 +103,10 @@ def main():
             stats["processed_files"] += 1
             stats["total_chunks"] += len(chunks)
             print(f"  成功添加: {len(chunks)} 个文本块")
+
+            # 逐文件清理内存
+            del text, chunks, embeddings, chunk_ids
+            gc.collect()
 
         except Exception as e:
             stats["failed_files"] += 1

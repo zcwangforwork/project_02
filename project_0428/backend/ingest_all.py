@@ -241,7 +241,7 @@ def main():
     }
 
     start_time = time.time()
-    BATCH_COMMIT_SIZE = 5  # 每5个文件批量提交，避免积累过多chunks
+    BATCH_COMMIT_SIZE = 1  # 每处理1个文件就立即提交，避免积累过多chunks导致OOM
 
     # 暂存区
     pending_docs = []
@@ -249,7 +249,7 @@ def main():
     pending_ids = []
     pending_embs = []
 
-    MAX_CHROMA_BATCH = 40000  # ChromaDB 单次最大批次
+    MAX_CHROMA_BATCH = 1000  # ChromaDB 单次最大批次，从40000降至1000避免内存溢出
 
     def flush_pending():
         """将暂存区写入新 collection（分批提交避免超过最大批次限制）"""
