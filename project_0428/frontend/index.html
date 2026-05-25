@@ -158,6 +158,16 @@
                         <span id="sendText">发送</span>
                     </button>
                     <button
+                        id="exportBtn"
+                        onclick="exportReview()"
+                        class="bg-amber-600/30 hover:bg-amber-500/40 text-amber-300 p-3 rounded-xl transition-colors hidden"
+                        title="导出审核报告"
+                    >
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                        </svg>
+                    </button>
+                    <button
                         onclick="clearChat()"
                         class="bg-slate-700/50 hover:bg-slate-600/50 text-slate-300 p-3 rounded-xl transition-colors"
                         title="清空对话"
@@ -272,6 +282,8 @@
         let isLoading = false;
         let sessionId = 'session_' + Date.now();
         let selectedFile = null;
+        let latestReviewResult = null;    // 最新审核结果（用于导出）
+        let latestReviewFilename = null;  // 最新审核文件名
 
         const chatContainer = document.getElementById('chatContainer');
         const userInput = document.getElementById('userInput');
@@ -595,12 +607,25 @@
                 hideTypingIndicator();
 
                 if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.detail?.error?.message || error.detail || '请求失败');
+                    let errorMsg = `HTTP ${response.status}`;
+                    try {
+                        const error = await response.json();
+                        errorMsg = error.detail?.error?.message || error.detail || errorMsg;
+                        if (typeof errorMsg === 'object') errorMsg = JSON.stringify(errorMsg);
+                    } catch {
+                        errorMsg = await response.text() || errorMsg;
+                    }
+                    throw new Error(errorMsg);
                 }
 
-                const data = await response.json();
-                splitAndAddMessages('assistant', data.answer);
+                let data;
+                try {
+                    data = await response.json();
+                } catch {
+                    const text = await response.text();
+                    throw new Error(`服务器返回了非 JSON 格式的响应: ${text.substring(0, 200)}`);
+                }
+                splitAndAddMessages('assistant', data.answer || '（空响应）');
 
             } catch (error) {
                 hideTypingIndicator();
@@ -632,6 +657,56 @@
             `;
 
             sessionId = 'session_' + Date.now();
+            // 清空后隐藏导出按钮
+            document.getElementById('exportBtn').classList.add('hidden');
+            latestReviewResult = null;
+            latestReviewFilename = null;
+        }
+
+        async function exportReview() {
+            if (!latestReviewResult) {
+                alert('没有可导出的审核结果，请先上传文件进行审核。');
+                return;
+            }
+
+            const exportBtn = document.getElementById('exportBtn');
+            const originalHTML = exportBtn.innerHTML;
+            exportBtn.disabled = true;
+            exportBtn.innerHTML = '<svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>';
+
+            try {
+                const response = await fetch('/api/export-review', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        content: latestReviewResult,
+                        filename: latestReviewFilename || '审核报告'
+                    })
+                });
+
+                if (!response.ok) {
+                    let errorMsg = '导出失败';
+                    try { const err = await response.json(); errorMsg = err.detail || errorMsg; } catch {}
+                    throw new Error(errorMsg);
+                }
+
+                // 触发浏览器下载
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                const safeName = (latestReviewFilename || '审核报告').replace(/[<>:"/\\|?*]/g, '_');
+                a.download = safeName + '_审核报告.docx';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+            } catch (error) {
+                alert('导出失败: ' + error.message);
+            } finally {
+                exportBtn.disabled = false;
+                exportBtn.innerHTML = originalHTML;
+            }
         }
 
         function openUploadModal() {
@@ -799,6 +874,10 @@
                         const auditTypeText = processMode === 'analyze_risk' ? '风险管理专项审核' : '综合体系审核';
                         addMessage('user', `请进行${auditTypeText}: ${fileName}`);
                         if (data.answer) {
+                            // 保存审核结果用于导出
+                            latestReviewResult = data.answer;
+                            latestReviewFilename = fileName;
+                            document.getElementById('exportBtn').classList.remove('hidden');
                             splitAndAddMessages('assistant', data.answer);
                             // 显示检索到的相关文档
                             if (data.retrieved_docs && data.retrieved_docs.length > 0) {

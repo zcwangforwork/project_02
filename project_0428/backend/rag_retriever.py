@@ -4,6 +4,7 @@
 """
 import os
 import asyncio
+import json
 import logging
 import threading
 import gc
@@ -258,7 +259,17 @@ class RAGRetriever:
             try:
                 response = await client.post(self.api_url, headers=headers, json=payload)
                 response.raise_for_status()
-                result = response.json()
+                # 安全解析 JSON：API 可能返回非 JSON 错误文本
+                try:
+                    result = response.json()
+                except json.JSONDecodeError:
+                    response_text = response.text[:500]
+                    logger.warning(f"API 返回非 JSON 响应: {response_text}")
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        await asyncio.sleep(wait_time)
+                        continue
+                    raise RuntimeError(f"API 返回了非 JSON 格式的响应: {response_text}")
 
                 answer = ""
                 choices = result.get("choices", [])

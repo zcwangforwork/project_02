@@ -2,10 +2,12 @@
 医疗器械体系文件审核 Agent - FastAPI 后端服务
 """
 import os
+import re
 import json
+import asyncio
 import base64
 import shutil
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from contextlib import asynccontextmanager
 from pathlib import Path
 import tempfile
@@ -66,7 +68,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     """聊天响应模型"""
     answer: str = Field(..., description="助手的回答")
-    usage: Optional[Dict[str, int]] = Field(None, description="令牌使用情况")
+    usage: Optional[Dict[str, Any]] = Field(None, description="令牌使用情况")
 
 
 class HealthResponse(BaseModel):
@@ -207,7 +209,7 @@ def init_vector_store():
 
 # ============== API 调用函数 ==============
 async def call_openai_api(messages: List[Dict], temperature: float = 0.7, max_tokens: int = 32000) -> Dict:
-    """调用 OpenAI 兼容 API"""
+    """调用 OpenAI 兼容 API，带重试机制"""
     if not config.api_key:
         raise HTTPException(status_code=500, detail="API Key 未配置")
 
@@ -223,18 +225,61 @@ async def call_openai_api(messages: List[Dict], temperature: float = 0.7, max_to
         "max_tokens": max_tokens
     }
 
+    last_error = None
+    max_retries = 3
+
     async with httpx.AsyncClient(timeout=config.timeout, trust_env=False) as client:
-        try:
-            response = await client.post(config.api_url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except httpx.TimeoutException:
-            raise HTTPException(status_code=504, detail="请求超时")
-        except httpx.HTTPStatusError as e:
-            error_detail = e.response.json() if e.response.content else {"error": str(e)}
-            raise HTTPException(status_code=e.response.status_code, detail=error_detail)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"API 调用失败: {str(e)}")
+        for attempt in range(max_retries):
+            try:
+                response = await client.post(config.api_url, headers=headers, json=payload)
+                response.raise_for_status()
+                # 安全解析 JSON：API 可能返回非 JSON 错误文本（如 "Internal Server Error"）
+                try:
+                    return response.json()
+                except json.JSONDecodeError:
+                    response_text = response.text[:500]
+                    print(f"[API] 非 JSON 响应 (尝试 {attempt+1}/{max_retries}): {response_text}")
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        print(f"[API] 等待 {wait_time} 秒后重试...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"API 返回了非 JSON 格式的响应: {response_text}"
+                    )
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429 and attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    print(f"[API] 速率限制 (尝试 {attempt+1}/{max_retries}), 等待 {wait_time} 秒...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                # 安全读取错误响应体
+                try:
+                    error_detail = e.response.json() if e.response.content else {"error": str(e)}
+                except json.JSONDecodeError:
+                    error_detail = {"error": e.response.text[:500] if e.response.content else str(e)}
+                raise HTTPException(status_code=e.response.status_code, detail=error_detail)
+            except httpx.TimeoutException as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    print(f"[API] 请求超时 (尝试 {attempt+1}/{max_retries}), 等待 {wait_time} 秒...")
+                    await asyncio.sleep(wait_time)
+                    continue
+            except httpx.ConnectError as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    print(f"[API] 连接失败 (尝试 {attempt+1}/{max_retries}), 等待 {wait_time} 秒...")
+                    await asyncio.sleep(wait_time)
+                    continue
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"API 调用失败: {str(e)}")
+
+        if last_error:
+            raise HTTPException(status_code=504, detail=f"API 请求多次失败: {str(last_error)}")
+        raise HTTPException(status_code=502, detail="API 请求失败，已重试多次")
 
 
 async def get_embeddings(texts: List[str]) -> List[List[float]]:
@@ -373,6 +418,12 @@ async def chat(request: ChatRequest, session_id: str = "default"):
         choice = choices[0]
         message = choice.get("message", {})
         answer = message.get("content", "")
+        # GLM-5.1 模型：当 content 为空时，从 reasoning_content 提取实际回答
+        if not answer:
+            reasoning = message.get("reasoning_content", "")
+            if reasoning:
+                # 将思考过程作为回答返回（虽不完美，但优于空响应）
+                answer = reasoning
 
     if not answer:
         answer = str(result) if result else ""
@@ -567,6 +618,198 @@ async def analyze_document(
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+
+# ============== Markdown 转 DOCX 辅助函数 ==============
+def _md_to_docx(md_content: str, doc_title: str) -> "Document":
+    """将 Markdown 格式的审核报告转换为 Word 文档"""
+    from docx import Document
+    from docx.shared import Pt, Inches, Cm, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from lxml import etree
+
+    doc = Document()
+
+    # 设置默认字体
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = '微软雅黑'
+    font.size = Pt(11)
+    style.element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
+
+    # 标题页
+    title_para = doc.add_paragraph()
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_run = title_para.add_run(doc_title)
+    title_run.bold = True
+    title_run.size = Pt(18)
+    title_run.font.name = '微软雅黑'
+    title_run.element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
+
+    subtitle_para = doc.add_paragraph()
+    subtitle_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    subtitle_run = subtitle_para.add_run('医疗器械体系文件审核报告')
+    subtitle_run.size = Pt(14)
+    subtitle_run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+    subtitle_run.font.name = '微软雅黑'
+    subtitle_run.element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
+
+    doc.add_paragraph()  # 空行
+
+    # 逐行解析 Markdown
+    lines = md_content.split('\n')
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # 跳过空行
+        if not line.strip():
+            i += 1
+            continue
+
+        # 标题
+        heading_match = re.match(r'^(#{1,4})\s+(.+)$', line)
+        if heading_match:
+            level = len(heading_match.group(1))
+            text = heading_match.group(2).strip()
+            heading = doc.add_heading(text, level=min(level, 3))
+            for run in heading.runs:
+                run.font.name = '微软雅黑'
+                run.element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
+            i += 1
+            continue
+
+        # 水平线
+        if re.match(r'^[-–—]{3,}\s*$', line.strip()):
+            para = doc.add_paragraph()
+            para.paragraph_format.space_before = Pt(6)
+            para.paragraph_format.space_after = Pt(6)
+            pPr = para._p.get_or_add_pPr()
+            pBdr = etree.SubElement(pPr, qn('w:pBdr'))
+            bottom = etree.SubElement(pBdr, qn('w:bottom'))
+            bottom.set(qn('w:val'), 'single')
+            bottom.set(qn('w:sz'), '6')
+            bottom.set(qn('w:space'), '1')
+            bottom.set(qn('w:color'), 'CCCCCC')
+            i += 1
+            continue
+
+        # 无序列表
+        bullet_match = re.match(r'^(\s*)[-*]\s+(.+)$', line)
+        if bullet_match:
+            para = doc.add_paragraph(style='List Bullet')
+            text = bullet_match.group(2)
+            _add_formatted_text(para, text)
+            i += 1
+            continue
+
+        # 有序列表
+        numbered_match = re.match(r'^(\s*)\d+\.\s+(.+)$', line)
+        if numbered_match:
+            para = doc.add_paragraph(style='List Number')
+            text = numbered_match.group(2)
+            _add_formatted_text(para, text)
+            i += 1
+            continue
+
+        # 代码块
+        if line.strip().startswith('```'):
+            i += 1
+            code_lines = []
+            while i < len(lines) and not lines[i].strip().startswith('```'):
+                code_lines.append(lines[i])
+                i += 1
+            i += 1  # skip closing ```
+            if code_lines:
+                code_para = doc.add_paragraph()
+                code_para.paragraph_format.left_indent = Cm(1)
+                code_run = code_para.add_run('\n'.join(code_lines))
+                code_run.font.name = 'Consolas'
+                code_run.font.size = Pt(9)
+                code_run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+            continue
+
+        # 普通段落
+        para = doc.add_paragraph()
+        _add_formatted_text(para, line)
+        i += 1
+
+    # 设置页边距
+    for section in doc.sections:
+        section.top_margin = Cm(2.5)
+        section.bottom_margin = Cm(2.5)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(2.5)
+
+    return doc
+
+
+def _add_formatted_text(paragraph, text: str):
+    """向段落添加带格式的文本（支持 **粗体** 和 `行内代码`）"""
+    from docx.shared import Pt, RGBColor
+    from docx.oxml.ns import qn
+
+    # 分割粗体和普通文本
+    parts = re.split(r'(\*\*.*?\*\*|`.*?`)', text)
+    for part in parts:
+        if part.startswith('**') and part.endswith('**'):
+            run = paragraph.add_run(part[2:-2])
+            run.bold = True
+        elif part.startswith('`') and part.endswith('`'):
+            run = paragraph.add_run(part[1:-1])
+            run.font.name = 'Consolas'
+            run.font.size = Pt(10)
+            run.font.color.rgb = RGBColor(0x00, 0x66, 0x00)
+        else:
+            run = paragraph.add_run(part)
+        run.font.name = '微软雅黑'
+        run.element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
+
+
+# ============== 导出接口 ==============
+class ExportRequest(BaseModel):
+    """导出请求模型"""
+    content: str = Field(..., description="审核报告 Markdown 内容")
+    filename: str = Field(default="审核报告", description="原始文件名")
+
+@app.post("/api/export-review")
+async def export_review(request: ExportRequest):
+    """
+    将审核结果导出为 Word (.docx) 文件
+
+    Args:
+        request: 包含审核报告 markdown 内容和文件名
+
+    Returns:
+        .docx 文件下载
+    """
+    if not request.content:
+        raise HTTPException(status_code=400, detail="审核报告内容为空")
+
+    # 生成报告标题
+    base_name = Path(request.filename).stem if request.filename else "审核报告"
+    doc_title = f'{base_name} — 审核报告'
+
+    # 转换 Markdown 为 DOCX
+    doc = _md_to_docx(request.content, doc_title)
+
+    # 写入内存流
+    from io import BytesIO
+    from fastapi.responses import Response
+    buf = BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+
+    # 纯 ASCII 文件名
+    ascii_name = re.sub(r'[^\x00-\x7F]', '_', base_name).strip('_') or 'report'
+    download_name = f'{ascii_name}_audit_report.docx'
+
+    return Response(
+        content=buf.getvalue(),
+        media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        headers={'Content-Disposition': f'attachment; filename="{download_name}"'}
+    )
 
 
 @app.post("/api/clear")
