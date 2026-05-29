@@ -1,5 +1,62 @@
 # Code Writer Log
 
+## 2026-05-29 14:30 - 全生命周期文档处理模式扩展
+
+### Overview
+扩展文档上传后的处理方式，从原来的2种审核模式（风险管理、通用）扩展为覆盖医疗器械产品全生命周期的27种文档处理模式，涵盖设计开发、风险管理、合规注册、生产质控四大阶段。
+
+### New File Created
+- `backend/audit_prompts.py` (913 lines): 全生命周期审核提示词模块
+  - 5组逐章审核System Prompt (设计开发/风险管理/合规注册/生产质控/通用)
+  - 5组综合分析System Prompt
+  - 27种审核类型映射表 (AUDIT_TYPE_MAP)
+  - 审计类型中文标签 (AUDIT_TYPE_LABELS)
+  - 生命周期阶段分组 (LIFECYCLE_PHASES)
+  - 提示词获取函数 (get_section_prompt/get_synthesis_prompt/get_audit_type_label)
+
+### Files Modified
+- `backend/rag_retriever.py` (from 647 to 575 lines):
+  - 移除内联的3个旧Prompt常量
+  - 导入audit_prompts模块的提示词获取函数
+  - 更新_audit_single_section()使用get_section_prompt()
+  - 更新_analyze_document_fallback()使用新提示词
+  - 更新analyze_document()综合分析使用get_synthesis_prompt()
+  - 在用户上下文中添加审核类型标签
+  - 保留FALLBACK_PROMPT以兼容模块导入失败的情况
+
+- `backend/main.py` (from 851 to 908 lines):
+  - 导入audit_prompts模块
+  - 扩展/api/analyze的audit_type验证，支持全部27种类型
+  - 新增/api/audit-types端点，向前端提供生命周期阶段和审核类型信息
+  - 更新/info端点返回audit_types和lifecycle_phases
+  - 更新/api/analyze docstring
+
+- `frontend/index.html` (from 911 to 1035 lines):
+  - 重新设计上传模态框处理方式区域
+  - 新增6个生命周期阶段标签页（设计开发/风险管理/合规注册/生产质控/综合审核/其他）
+  - 每个阶段有独立文档类型下拉列表
+  - 动态审核类型说明更新
+  - 阶段切换功能和颜色编码
+
+### Design & Development types (10):
+design_planning, design_input, design_input_review, design_output,
+design_review, design_verification, design_validation, design_change,
+design_transfer, dhf
+
+### Compliance & Registration types (6):
+regulatory_submission, technical_documentation, clinical_evaluation,
+labeling_ifu, standards_compliance, essential_requirements
+
+### Production & QC types (9):
+sop, batch_record, process_validation, qc_testing, capa,
+supplier_management, equipment_management, environment_monitoring, traceability
+
+### Verification
+- Python syntax checks: all 3 files OK
+- Existing unit tests: 10/10 passed
+- Integration routing test: all 27 audit types correctly routed
+- Prompt sizes verified (design_development: 1997+974 chars, risk_management: 2251+943 chars)
+
 ## 2026-05-19 - Memory Optimization: 文件上传分析 OOM 修复
 
 ### Files Modified
@@ -265,3 +322,53 @@ The 2.9GB database should be rebuilt using the optimized scripts.
 - File: E:\nrf_sample_codes\working_team_work\public\docs\code_writer_docs\project_0428_introduction.md
 - Change: 创建项目介绍文档（新建），包含项目概述、业务背景、功能特性、技术架构、核心模块、知识库、API、部署、文件结构、工具链、法规标准、开发状态、已知限制等13个章节
 - Result: Success - 文件创建完成
+
+## 2026-05-25 09:48:00 - Comprehensive Code Testing Session Started
+- Project: E:\nrf_sample_codes\working_team_work\public\project\project_0428
+- Task: Full comprehensive code testing - code review + existing test execution + static analysis
+- Scope: backend/main.py, backend/rag_retriever.py, backend/doc_processor.py, backend/vector_store.py, frontend/index.html, all test files
+
+## 2026-05-25 09:48:30 - Bash Command Executed
+- Command: `ls -la "E:/nrf_sample_codes/working_team_work/public/project/project_0428/"`
+- Working Dir: E:\nrf_sample_codes\working_team_work\code_test
+- Purpose: List project root directory structure
+- Result: Success - 17 items listed
+
+## 2026-05-25 09:48:30 - Bash Command Executed
+- Command: `find "E:/nrf_sample_codes/working_team_work/public/project/project_0428/" -type f -name "*.py" -o -name "*.html" ...`
+- Working Dir: E:\nrf_sample_codes\working_team_work\code_test
+- Purpose: List all source files in the project
+- Result: Success - 40 source files found
+
+## 2026-05-25 09:49:00 - Analysis
+- Topic: Core source code review (all 4 main modules + frontend)
+- Finding: Multiple issues identified including hardcoded API key, XSS risks, random vector fallback
+- Decision: Proceed with test execution then compile comprehensive report
+
+## 2026-05-25 09:50:00 - Bash Command Executed
+- Command: `python -m pytest tests/test_doc_processor.py -v`
+- Working Dir: E:/nrf_sample_codes/working_team_work/public/project/project_0428/backend
+- Purpose: Run existing doc_processor unit tests
+- Result: Success - 10/10 passed
+
+## 2026-05-25 09:50:00 - Bash Command Executed
+- Command: `python test_main_integration.py`
+- Working Dir: E:/nrf_sample_codes/working_team_work/public/project/project_0428/backend
+- Purpose: Run integration tests (config, models, history, module imports, app structure)
+- Result: Success - 8/8 passed
+
+## 2026-05-25 09:50:00 - Bash Command Executed
+- Command: `python test_vector_store_batching.py`
+- Working Dir: E:/nrf_sample_codes/working_team_work/public/project/project_0428/backend
+- Purpose: Run vector store batching logic tests
+- Result: Success - 6/6 passed
+
+## 2026-05-25 09:55:00 - Analysis
+- Topic: Comprehensive code review findings
+- Finding: Identified 3 critical, 4 high, 6 medium, 5 low severity issues. Major categories: security (API key leak, XSS, no auth), robustness (fail-open embedding, COM automation), code quality (magic numbers, code duplication)
+- Decision: Report compiled and saved to E:\nrf_sample_codes\working_team_work\public\docs\code_test_docs\code-test-report-project_0428-2026-05-25.md
+
+## 2026-05-29 15:24:42 - File Created
+- File: docs/项目介绍.md
+- Change: 创建项目介绍文档，包含项目概述、整体结构、技术路线、代码文件详解（18 个 Python 文件）、API 接口清单、知识库数据、开发历史、部署指南等完整内容
+- Result: Success - 文件已创建于 E:\nrf_sample_codes\working_team_work\public\project\project_0428_beta\docs\项目介绍.md

@@ -19,6 +19,19 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+# 导入全生命周期审核提示词
+try:
+    from audit_prompts import AUDIT_TYPE_MAP, AUDIT_TYPE_LABELS, LIFECYCLE_PHASES, get_audit_type_label
+    _AUDIT_PROMPTS_AVAILABLE = True
+except ImportError:
+    AUDIT_TYPE_MAP = {}
+    AUDIT_TYPE_LABELS = {}
+    LIFECYCLE_PHASES = {}
+    _AUDIT_PROMPTS_AVAILABLE = False
+
+    def get_audit_type_label(t: str) -> str:
+        return "综合体系审核"
+
 
 # ============== 配置管理 ==============
 # API Key 优先从环境变量读取，不存在时使用默认值（本地开发用）
@@ -375,11 +388,21 @@ app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 @app.get("/info", response_model=Dict)
 async def root():
     """根路径 - 服务信息"""
-    return {
+    result = {
         "name": "医疗器械体系文件审核 Agent API",
         "version": "3.0.0",
-        "docs": "/docs"
+        "docs": "/docs",
+        "audit_types": list(AUDIT_TYPE_MAP.keys()) if AUDIT_TYPE_MAP else ["risk_management", "general"],
+        "lifecycle_phases": {
+            phase: {
+                "label": info["label"],
+                "description": info["description"],
+                "types": info["types"],
+            }
+            for phase, info in LIFECYCLE_PHASES.items()
+        } if LIFECYCLE_PHASES else {},
     }
+    return result
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -521,7 +544,16 @@ async def analyze_document(
         file: 上传的文件（.docx 或 .pdf）
         question: 用户的问题或指令
         session_id: 会话 ID
-        audit_type: 审核类型，"risk_management"（风险管理专项）或 "general"（综合体系审核）
+        audit_type: 审核类型，支持全生命周期文档处理：
+            设计开发: design_planning, design_input, design_input_review, design_output,
+                     design_review, design_verification, design_validation, design_change,
+                     design_transfer, dhf
+            风险管理: risk_management
+            合规注册: regulatory_submission, technical_documentation, clinical_evaluation,
+                     labeling_ifu, standards_compliance, essential_requirements
+            生产质控: sop, batch_record, process_validation, qc_testing, capa,
+                     supplier_management, equipment_management, environment_monitoring, traceability
+            通用: general
 
     Returns:
         审核结果
@@ -544,8 +576,9 @@ async def analyze_document(
     if ext not in ['.docx', '.pdf']:
         raise HTTPException(status_code=400, detail=f"不支持的文件格式: {ext}")
 
-    # 验证审核类型
-    if audit_type not in ["risk_management", "general"]:
+    # 验证审核类型：支持全生命周期所有文档类型
+    VALID_AUDIT_TYPES = set(AUDIT_TYPE_MAP.keys()) if AUDIT_TYPE_MAP else {"risk_management", "general"}
+    if audit_type not in VALID_AUDIT_TYPES:
         audit_type = "risk_management"
 
     # 保存上传文件到临时目录（流式写入，避免全量加载到内存）
@@ -824,6 +857,30 @@ async def get_history(session_id: str = "default"):
     """获取会话历史"""
     history = conversation_manager.get_or_create(session_id)
     return {"session_id": session_id, "history": history}
+
+
+@app.get("/api/audit-types")
+async def get_audit_types():
+    """获取支持的审核类型和生命周期阶段信息"""
+    result = {
+        "lifecycle_phases": {},
+        "all_types": {},
+    }
+    if LIFECYCLE_PHASES:
+        for phase_key, phase_info in LIFECYCLE_PHASES.items():
+            phase_types = {}
+            for t in phase_info["types"]:
+                phase_types[t] = {
+                    "label": AUDIT_TYPE_LABELS.get(t, t),
+                    "category": phase_key,
+                }
+            result["lifecycle_phases"][phase_key] = {
+                "label": phase_info["label"],
+                "description": phase_info["description"],
+                "types": phase_types,
+            }
+            result["all_types"].update(phase_types)
+    return result
 
 
 @app.get("/api/vectorstore/status")

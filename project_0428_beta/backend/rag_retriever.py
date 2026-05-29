@@ -1,6 +1,8 @@
 """
 医疗器械体系文件审核 - RAG 检索模块
 实现多轮审核流水线：章节分割 → 逐章并发审核 → 综合分析
+
+全生命周期文档处理：设计开发 + 合规注册 + 生产质控
 """
 import os
 import asyncio
@@ -12,123 +14,33 @@ from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import httpx
 
+from audit_prompts import (
+    get_section_prompt,
+    get_synthesis_prompt,
+    get_audit_type_label,
+    AUDIT_TYPE_MAP,
+)
+
 logger = logging.getLogger(__name__)
 
 
 class RAGRetriever:
-    """RAG 检索器，用于医疗器械体系文件审核"""
+    """RAG 检索器，用于医疗器械体系文件全生命周期审核"""
 
-    # 风险管理专项审核的 System Prompt
-    RISK_MANAGEMENT_SECTION_PROMPT = """你是一个专业的医疗器械企业体系文件审核专家，精通ISO 14971:2019风险管理标准。
-
-你的任务是对用户文档的**当前章节**进行深入审核，结合知识库参考内容，给出详细的差距分析和修改建议。
-
-## 审核原则
-1. 逐条对照知识库中的标准要求
-2. 明确指出当前内容与标准的差距
-3. 给出具体的、可操作的修改建议，包含示例表述
-4. 引用ISO 14971:2019具体条款号
-
-## 输出格式（严格按此格式）
-
-### 原文摘要
-[摘录用户文档中该章节的关键内容，200字以内]
-
-### 标准要求
-[列出知识库中对应章节的要求内容，注明来源文件名]
-
-### 差距分析
-[详细分析用户文档内容与标准要求之间的具体差距，每条差距单独列出]
-
-### 修改建议
-[对每条差距给出具体的修改建议，包含示例表述。格式：
-**建议N**: [具体建议]
-**示例**: [示例表述]
-]
-
-### 关联法规条款
-[引用ISO 14971:2019的具体条款号，如4.1、5.2、5.5等]
-
-### 严重度评级
-[对当前章节的合规情况评级：🔴 严重缺失 / 🟡 需要修改 / 🟢 基本符合]
-"""
-
-    # 通用体系审核的 System Prompt
-    GENERAL_SECTION_PROMPT = """你是一个专业的医疗器械企业体系文件审核专家。
-
-你的任务是对用户文档的**当前章节**进行深入审核，结合知识库参考内容给出修改建议。
-
-## 审核范围
-- ISO 13485:2016 医疗器械质量管理体系
-- ISO 14971:2019 医疗器械风险管理
-- IEC 62304 医疗器械软件生命周期过程
-- EU MDR 2017/745 欧盟医疗器械法规
-- NMPA 医疗器械生产质量管理规范
-
-## 审核原则
-1. 完整性：是否覆盖相关法规条款
-2. 一致性：内容是否相互协调
-3. 可操作性：描述是否足够具体
-4. 证据链：是否有记录表单支撑
+    # 保留向后兼容的默认 Prompt（当 audit_prompts 不可用时使用）
+    FALLBACK_SECTION_PROMPT = """你是一个专业的医疗器械企业体系文件审核专家。
+对用户文档的当前章节进行审核，给出差距分析和修改建议。
 
 ## 输出格式
-
-### 原文摘要
-[摘录用户文档中该章节的关键内容，200字以内]
-
-### 标准要求
-[列出知识库中对应的要求，注明来源]
-
-### 差距分析
-[逐条分析差距]
-
-### 修改建议
-[对每条差距给出具体建议和示例表述]
-
-### 关联法规条款
-[引用相关标准条款]
-
-### 严重度评级
-[🔴 严重缺失 / 🟡 需要修改 / 🟢 基本符合]
+### 原文摘要 | ### 标准要求 | ### 差距分析 | ### 修改建议 | ### 关联法规条款 | ### 严重度评级
 """
 
-    # 综合分析 System Prompt
-    SYNTHESIS_PROMPT = """你是一个专业的医疗器械企业体系文件审核专家。
-
-你已完成了对用户文档各章节的逐一审核。现在需要综合所有章节的审核结果，生成最终审核报告。
+    FALLBACK_SYNTHESIS_PROMPT = """你是一个专业的医疗器械企业体系文件审核专家。
+汇总各章节审核结果，生成最终审核报告。
 
 ## 输出格式
-
 # 体系文件审核报告
-
-## 一、审核概述
-- 文档类型和审核范围
-- 总体合规情况概述
-
-## 二、严重问题汇总（🔴 严重缺失）
-[列出所有严重缺失项，每项包含：所在章节、问题描述、修改建议]
-
-## 三、需要修改项汇总（🟡 需要修改）
-[列出所有需要修改项，每项包含：所在章节、问题描述、修改建议]
-
-## 四、基本符合项（🟢 基本符合）
-[简要列出基本符合的章节]
-
-## 五、缺失章节
-[列出文档中应该有但没有的章节，对照标准要求说明为什么需要这些章节]
-
-## 六、交叉引用问题
-[检查各章节之间的一致性问题，例如：
-- 危害识别中列出的危害是否在风险控制中都有对应措施
-- 各章节的术语定义是否一致
-- 引用的其他文件/记录是否实际存在
-]
-
-## 七、修改优先级建议
-[按优先级排列所有需要修改的问题，从最紧急到最不紧急]
-
-## 八、关联法规条款总览
-[汇总本次审核涉及的所有法规条款]
+## 一、审核概述 | ## 二、严重问题汇总 | ## 三、需要修改项汇总 | ## 四、基本符合项 | ## 五、缺失章节 | ## 六、修改优先级建议 | ## 七、关联法规条款总览
 """
 
     def __init__(self, vector_store, api_key: str, api_url: str, model: str = "glm-5.1"):
@@ -323,14 +235,17 @@ class RAGRetriever:
                 # 检索相关知识库内容
                 relevant_docs = await self._retrieve_for_section(section_content, n_results=5)
 
-                # 选择对应的 system prompt
-                if audit_type == "risk_management":
-                    system_prompt = self.RISK_MANAGEMENT_SECTION_PROMPT
-                else:
-                    system_prompt = self.GENERAL_SECTION_PROMPT
+                # 根据审核类型选择对应的专用 System Prompt（从 audit_prompts 模块加载）
+                try:
+                    system_prompt = get_section_prompt(audit_type)
+                    audit_label = get_audit_type_label(audit_type)
+                except Exception:
+                    system_prompt = self.FALLBACK_SECTION_PROMPT
+                    audit_label = "体系文件审核"
 
                 # 构建每章节的上下文
                 context_parts = [
+                    f"## 审核类型：{audit_label}",
                     f"## 当前审核章节：{section_title}\n",
                     "### 用户文档原文：",
                     section_content[:3000],
@@ -473,8 +388,15 @@ class RAGRetriever:
 
         # ===== 第三轮：综合分析 =====
         try:
+            # 获取审核类型标签
+            try:
+                audit_label = get_audit_type_label(audit_type)
+            except Exception:
+                audit_label = "综合体系审核"
+
             # 构建综合分析上下文（只传摘要，不传全文）
             synthesis_parts = [
+                f"审核类型：{audit_label}",
                 f"以下是文档「{user_filename}」各章节的审核摘要：\n"
             ]
 
@@ -492,8 +414,14 @@ class RAGRetriever:
 
             synthesis_context = '\n'.join(synthesis_parts)
 
+            # 选择对应阶段的综合分析 Prompt
+            try:
+                synthesis_prompt = get_synthesis_prompt(audit_type)
+            except Exception:
+                synthesis_prompt = self.FALLBACK_SYNTHESIS_PROMPT
+
             synthesis_answer = await self._call_llm(
-                system_prompt=self.SYNTHESIS_PROMPT,
+                system_prompt=synthesis_prompt,
                 user_content=synthesis_context,
                 max_tokens=8000,
                 temperature=0.5
@@ -567,10 +495,10 @@ class RAGRetriever:
         Returns:
             审核结果
         """
-        if audit_type == "risk_management":
-            system_prompt = self.RISK_MANAGEMENT_SECTION_PROMPT
-        else:
-            system_prompt = self.GENERAL_SECTION_PROMPT
+        try:
+            system_prompt = get_section_prompt(audit_type)
+        except Exception:
+            system_prompt = self.FALLBACK_SECTION_PROMPT
 
         # 简单检索
         relevant_docs = await self._retrieve_for_section(user_document, n_results=5)
