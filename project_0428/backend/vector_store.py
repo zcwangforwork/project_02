@@ -85,11 +85,10 @@ class VectorStore:
     """ChromaDB 向量存储管理类"""
 
     # 查询时使用的目标 collection 列表（优先级从高到低）
-    # 仅查询 v2 collection，跳过主 collection 以避免加载其 2.8GB HNSW 索引到内存
-    # 如果你需要主 collection 的数据，先运行 ingest_all.py 将其导入到 v2 collection
-    QUERY_COLLECTIONS = ["medical_device_kb_v2"]
+    # 使用 insulin_pump_kb collection 进行检索
+    QUERY_COLLECTIONS = ["insulin_pump_kb"]
 
-    def __init__(self, persist_directory: str = "data/chroma_db", embedding_function=None):
+    def __init__(self, persist_directory: str = "data/chroma_db_insulin_pump", embedding_function=None):
         """
         初始化向量存储
 
@@ -105,7 +104,7 @@ class VectorStore:
         full_path = base_dir / persist_directory
 
         self.persist_directory = str(full_path)
-        self.collection_name = "medical_device_kb"
+        self.collection_name = "insulin_pump_kb"
         self.embedding_function = embedding_function
 
         # 确保目录存在
@@ -211,8 +210,7 @@ class VectorStore:
         """
         查询相似文档（从 QUERY_COLLECTIONS 列表中的 collection 检索并合并结果）
 
-        仅查询 QUERY_COLLECTIONS 中配置的 collection（默认仅 v2），
-        跳过主 collection 以避免加载其大型 HNSW 索引到内存。
+        从 QUERY_COLLECTIONS 中配置的 collection（默认 insulin_pump_kb）检索。
 
         Args:
             query_texts: 查询文本列表
@@ -334,7 +332,7 @@ class VectorStore:
         return total
 
 
-def create_vector_store(persist_directory: str = "data/chroma_db", embedding_function=None) -> VectorStore:
+def create_vector_store(persist_directory: str = "data/chroma_db_insulin_pump", embedding_function=None) -> VectorStore:
     """
     工厂函数：创建向量存储实例
 

@@ -236,30 +236,21 @@
                     </div>
                 </div>
 
-                <!-- 处理选项 - 全生命周期阶段选择 -->
+                <!-- 处理选项 -->
                 <div id="processOptions" class="hidden mt-4">
                     <label class="text-slate-300 text-sm mb-2 block">处理方式</label>
-
-                    <!-- 生命周期阶段标签 -->
-                    <div class="flex flex-wrap gap-1 mb-3" id="phaseTabs">
-                        <button class="phase-tab px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-emerald-600 text-white" data-phase="design_development">设计开发</button>
-                        <button class="phase-tab px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-slate-700 text-slate-300" data-phase="risk_management">风险管理</button>
-                        <button class="phase-tab px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-slate-700 text-slate-300" data-phase="compliance_registration">合规注册</button>
-                        <button class="phase-tab px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-slate-700 text-slate-300" data-phase="production_qc">生产质控</button>
-                        <button class="phase-tab px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-slate-700 text-slate-300" data-phase="general">综合审核</button>
-                        <button class="phase-tab px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-slate-700 text-slate-300" data-phase="other">其他</button>
-                    </div>
-
-                    <!-- 文档类型下拉 -->
                     <select id="processMode" class="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-slate-100">
-                        <!-- 动态填充 -->
+                        <option value="analyze_risk">风险管理专项审核（对照审核）</option>
+                        <option value="analyze_general">综合体系文件审核</option>
+                        <option value="extract">仅提取文本</option>
+                        <option value="chat">添加到对话上下文</option>
                     </select>
-                    <p id="processHint" class="text-slate-500 text-sm mt-2">选择要上传的体系文件所属的设计开发阶段，系统将使用对应的审核标准进行检查</p>
+                    <p id="processHint" class="text-slate-500 text-sm mt-2">将对照知识库模板逐条给出修改建议（推荐用于风险管理文档）</p>
 
                     <!-- 审核类型说明 -->
                     <div id="auditTypeHint" class="mt-3 bg-slate-700/30 rounded-lg p-3 text-sm">
-                        <p id="auditTypeHintTitle" class="text-emerald-400 font-medium mb-1">设计和开发策划</p>
-                        <p id="auditTypeHintDesc" class="text-slate-400">对照NMPA GMP第28-31条和ISO 13485 §7.3，审核设计开发策划书的完整性、资源规划、职责分工、开发阶段划分和里程碑设定</p>
+                        <p class="text-emerald-400 font-medium mb-1">风险管理专项审核</p>
+                        <p class="text-slate-400">对照ISO 14971标准和知识库模板，逐条分析危害识别、风险评估、风险控制等章节，给出具体修改建议</p>
                     </div>
                 </div>
 
@@ -777,12 +768,6 @@
             document.getElementById('fileInfo').classList.remove('hidden');
             document.getElementById('processOptions').classList.remove('hidden');
             document.getElementById('uploadConfirmBtn').disabled = false;
-            // 初始化默认阶段（设计开发）
-            if (currentPhase !== 'design_development') {
-                switchPhase('design_development');
-            } else {
-                updateAuditTypeHint();
-            }
         }
 
         function formatFileSize(bytes) {
@@ -799,144 +784,35 @@
             document.getElementById('uploadConfirmBtn').disabled = true;
         }
 
-        // ===== 生命周期阶段 & 文档类型数据 =====
-        const LIFECYCLE_PHASES = {
-            design_development: {
-                label: '设计开发',
-                color: 'emerald',
-                description: '覆盖产品设计和开发全过程文档审核，基于NMPA GMP第28-31条、ISO 13485 §7.3',
-                types: {
-                    design_planning: { label: '设计和开发策划', desc: '对照NMPA GMP第28条和ISO 13485 §7.3.2，审核设计开发策划书的完整性、资源规划、职责分工、开发阶段划分和里程碑设定' },
-                    design_input: { label: '设计和开发输入', desc: '对照NMPA GMP第30条和ISO 13485 §7.3.3，审核设计输入是否完整覆盖功能、性能、安全、法规、风险管理等全部要求' },
-                    design_input_review: { label: '设计和开发输入评审', desc: '对照12项强制评审项逐条审核，检查评审结论、缺陷描述、改进建议和审批签字的完整性' },
-                    design_output: { label: '设计输出', desc: '对照NMPA GMP第31条和ISO 13485 §7.3.4，审核设计输出是否满足输入要求，包含接收准则和产品规范' },
-                    design_review: { label: '设计评审', desc: '审核设计评审的策划、实施和记录，检查评审参与人员、评审内容和评审结论的完整性' },
-                    design_verification: { label: '设计验证', desc: '审核设计验证计划和报告，检查验证是否证明设计输出满足设计输入的全部要求' },
-                    design_validation: { label: '设计确认', desc: '审核设计确认计划和报告，检查确认是否证明产品满足预期用途和用户需求' },
-                    design_change: { label: '设计更改', desc: '审核设计更改的评审、验证和批准流程，检查更改影响评估和可追溯性' },
-                    design_transfer: { label: '设计转换', desc: '审核设计转换文档，检查从研发到生产的转换过程是否受控，关键参数是否正确传递' },
-                    dhf: { label: '设计历史文档(DHF)', desc: '审核DHF完整性，检查是否覆盖所有设计控制阶段，追溯链是否完整' },
-                }
-            },
-            risk_management: {
-                label: '风险管理',
-                color: 'red',
-                description: '基于ISO 14971:2019/GB/T 42062-2022全生命周期风险管理审核',
-                types: {
-                    risk_management: { label: '风险管理文档', desc: '逐条对照ISO 14971:2019第4-10章，审核风险管理计划、风险分析、风险评价、风险控制、综合剩余风险评价和风险管理报告' },
-                }
-            },
-            compliance_registration: {
-                label: '合规注册',
-                color: 'blue',
-                description: '覆盖产品注册申报全过程文档审核，基于NMPA注册管理办法及相关指导原则',
-                types: {
-                    regulatory_submission: { label: '注册申报资料', desc: '对照NMPA注册申报资料要求，审核格式合规性、内容完整性、标准符合性' },
-                    technical_documentation: { label: '技术文档', desc: '审核产品技术要求、性能指标、检验方法、产品结构组成、工作原理等内容的完整性和准确性' },
-                    clinical_evaluation: { label: '临床评价', desc: '审核临床评价报告，检查临床评价路径合理性、等同性论证充分性、临床数据完整性' },
-                    labeling_ifu: { label: '标签与说明书', desc: '对照《医疗器械说明书和标签管理规定》，审核标签标识完整性和说明书内容的准确性' },
-                    standards_compliance: { label: '标准符合性', desc: '审核标准符合性矩阵，检查适用标准清单完整性和符合性证据充分性' },
-                    essential_requirements: { label: '基本要求检查表', desc: '审核基本要求检查表（GSPR），逐项检查符合性方法和引用支持文件' },
-                }
-            },
-            production_qc: {
-                label: '生产质控',
-                color: 'purple',
-                description: '覆盖生产制造和质量管理全过程文档审核，基于NMPA GMP和ISO 13485 §7.4-7.5',
-                types: {
-                    sop: { label: '标准操作规程(SOP)', desc: '审核SOP的格式规范性、操作步骤可执行性、关键控制点识别、异常处理流程和引用表单完整性' },
-                    batch_record: { label: '批生产记录', desc: '审核批记录完整性：产品信息、批号、关键工艺参数、物料平衡、清场记录、操作人复核人签字' },
-                    process_validation: { label: '工艺验证', desc: '审核工艺验证方案和报告：CPP/CQA识别、取样计划、检验方法、数据分析和再验证周期' },
-                    qc_testing: { label: '质量检验', desc: '审核检验记录：检验依据现行有效性、抽样方案合理性、设备校准状态、不合格品处理流程' },
-                    capa: { label: '纠正与预防措施(CAPA)', desc: '审核CAPA记录：问题来源、根本原因分析深度、纠正/预防措施针对性、有效性验证' },
-                    supplier_management: { label: '供应商管理', desc: '审核供应商评估标准、合格供应商名录、业绩评估记录、关键物料供应商审计报告' },
-                    equipment_management: { label: '设备管理', desc: '审核设备清单、操作规程、维护计划、校准记录、设备状态标识的完整性和规范性' },
-                    environment_monitoring: { label: '环境监测', desc: '审核洁净区/控制区监测项目、频率、限值设定、超标处理流程和监测记录完整性' },
-                    traceability: { label: '追溯管理', desc: '审核批号管理和追溯系统，检查从关键物料到成品的正向和反向追溯链完整性' },
-                }
-            },
-            general: {
-                label: '综合审核',
-                color: 'slate',
-                description: '通用体系文件审核，覆盖ISO 13485、ISO 14971、IEC 62304、EU MDR、NMPA GMP等多项标准',
-                types: {
-                    general: { label: '综合体系文件审核', desc: '审核文件的完整性、一致性、可操作性和证据链，涵盖ISO 13485、MDR、GMP等多个标准' },
-                }
-            },
-            other: {
-                label: '其他',
-                color: 'slate',
-                description: '文本提取或添加到对话上下文',
-                types: {
-                    extract: { label: '仅提取文本', desc: '仅提取文档的文本内容，不进行审核分析' },
-                    chat: { label: '添加到对话上下文', desc: '将文档文本添加到对话上下文中，用于后续问答' },
-                }
-            },
-        };
-
-        let currentPhase = 'design_development';
-
-        function switchPhase(phase) {
-            currentPhase = phase;
-            // 更新标签样式
-            document.querySelectorAll('.phase-tab').forEach(tab => {
-                const tabPhase = tab.dataset.phase;
-                if (tabPhase === phase) {
-                    const colorMap = {
-                        design_development: 'bg-emerald-600 text-white',
-                        risk_management: 'bg-red-600 text-white',
-                        compliance_registration: 'bg-blue-600 text-white',
-                        production_qc: 'bg-purple-600 text-white',
-                        general: 'bg-cyan-600 text-white',
-                        other: 'bg-slate-600 text-white',
-                    };
-                    tab.className = 'phase-tab px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ' + (colorMap[phase] || 'bg-slate-600 text-white');
-                } else {
-                    tab.className = 'phase-tab px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-slate-700 text-slate-300';
-                }
-            });
-
-            // 更新文档类型下拉
-            const select = document.getElementById('processMode');
-            const phaseData = LIFECYCLE_PHASES[phase];
-            select.innerHTML = '';
-            for (const [key, info] of Object.entries(phaseData.types)) {
-                const option = document.createElement('option');
-                option.value = key;
-                option.textContent = info.label;
-                select.appendChild(option);
-            }
-
-            // 更新提示
-            document.getElementById('processHint').textContent = phaseData.description;
-            updateAuditTypeHint();
-        }
-
-        function updateAuditTypeHint() {
-            const select = document.getElementById('processMode');
-            const key = select.value;
-            const phaseData = LIFECYCLE_PHASES[currentPhase];
-            const info = phaseData.types[key];
-            const colorMap = {
-                design_development: 'emerald', risk_management: 'red',
-                compliance_registration: 'blue', production_qc: 'purple',
-                general: 'cyan', other: 'slate',
-            };
-            const color = colorMap[currentPhase] || 'slate';
-            document.getElementById('auditTypeHintTitle').className = 'text-' + color + '-400 font-medium mb-1';
-            document.getElementById('auditTypeHintTitle').textContent = info.label;
-            document.getElementById('auditTypeHintDesc').textContent = info.desc;
-        }
-
-        // 初始化阶段标签点击事件
-        document.querySelectorAll('.phase-tab').forEach(tab => {
-            tab.addEventListener('click', function() {
-                switchPhase(this.dataset.phase);
-            });
-        });
-
         document.getElementById('processMode').addEventListener('change', function() {
-            updateAuditTypeHint();
+            const hint = document.getElementById('processHint');
+            const auditHint = document.getElementById('auditTypeHint');
+            switch (this.value) {
+                case 'analyze_risk':
+                    hint.textContent = '将对照知识库模板逐条给出修改建议（推荐用于风险管理文档）';
+                    auditHint.classList.remove('hidden');
+                    auditHint.innerHTML = `
+                        <p class="text-emerald-400 font-medium mb-1">风险管理专项审核</p>
+                        <p class="text-slate-400">对照ISO 14971标准和知识库模板，逐条分析危害识别、风险评估、风险控制等章节，给出具体修改建议</p>
+                    `;
+                    break;
+                case 'analyze_general':
+                    hint.textContent = '综合审核体系文件的完整性、一致性和可操作性';
+                    auditHint.classList.remove('hidden');
+                    auditHint.innerHTML = `
+                        <p class="text-cyan-400 font-medium mb-1">综合体系文件审核</p>
+                        <p class="text-slate-400">审核文件的完整性、一致性、可操作性和证据链，涵盖ISO 13485、MDR、GMP等多个标准</p>
+                    `;
+                    break;
+                case 'extract':
+                    hint.textContent = '仅提取文档文本内容';
+                    auditHint.classList.add('hidden');
+                    break;
+                case 'chat':
+                    hint.textContent = '将文档添加到对话上下文';
+                    auditHint.classList.add('hidden');
+                    break;
+            }
         });
 
         async function confirmUpload() {
@@ -954,14 +830,15 @@
                 let endpoint = '/api/upload';
                 let auditType = 'risk_management';
 
-                // 判断处理模式
-                if (processMode === 'extract' || processMode === 'chat') {
-                    endpoint = '/api/upload';
-                } else {
+                if (processMode === 'analyze_risk') {
                     endpoint = '/api/analyze';
-                    auditType = processMode;  // 直接使用文档类型作为 audit_type
+                    auditType = 'risk_management';
+                } else if (processMode === 'analyze_general') {
+                    endpoint = '/api/analyze';
+                    auditType = 'general';
                 }
 
+                // 如果是分析模式，添加审核类型参数
                 if (endpoint === '/api/analyze') {
                     formData.append('audit_type', auditType);
                 }
@@ -993,17 +870,16 @@
                     const fileName = selectedFile ? selectedFile.name : '未知文件';
                     closeUploadModal();
 
-                    // 判断是否是审核模式（所有非 extract/chat 的模式）
-                    if (processMode !== 'extract' && processMode !== 'chat') {
-                        const phaseData = LIFECYCLE_PHASES[currentPhase];
-                        const typeInfo = phaseData.types[processMode];
-                        const auditTypeText = typeInfo ? typeInfo.label : '文档审核';
-                        addMessage('user', `【${phaseData.label}】${auditTypeText}: ${fileName}`);
+                    if (processMode === 'analyze_risk' || processMode === 'analyze_general') {
+                        const auditTypeText = processMode === 'analyze_risk' ? '风险管理专项审核' : '综合体系审核';
+                        addMessage('user', `请进行${auditTypeText}: ${fileName}`);
                         if (data.answer) {
+                            // 保存审核结果用于导出
                             latestReviewResult = data.answer;
                             latestReviewFilename = fileName;
                             document.getElementById('exportBtn').classList.remove('hidden');
                             splitAndAddMessages('assistant', data.answer);
+                            // 显示检索到的相关文档
                             if (data.retrieved_docs && data.retrieved_docs.length > 0) {
                                 const docsList = data.retrieved_docs.map((doc, i) =>
                                     `${i + 1}. ${doc.source}`
