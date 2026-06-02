@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>医疗器械体系文件审核 Agent</title>
+    <title>贴敷式胰岛素泵文档审核数字员工</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
@@ -85,9 +85,9 @@
         <!-- 标题区域 -->
         <header class="text-center mb-8">
             <h1 class="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-400 mb-2">
-                医疗器械体系文件审核 Agent
+                贴敷式胰岛素泵文档审核数字员工
             </h1>
-            <p class="text-slate-400 text-sm">ISO 13485 / ISO 14971 / IEC 62304 / MDR / NMPA / FDA QMSR</p>
+            <p class="text-slate-400 text-sm">设计开发 / 风险管理 / 软件合规 / 注册申报 / 生产质量 / 体系建设 | ISO 13485 / ISO 14971 / IEC 62304 / MDR / NMPA GMP</p>
         </header>
 
         <!-- 配置提示区域 -->
@@ -130,8 +130,8 @@
                         </svg>
                     </div>
                     <div class="bg-slate-700/50 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[80%]">
-                        <p class="text-slate-100">您好！我是医疗器械体系文件审核助手，可以帮您审核质量手册、程序文件、SOP 等体系文件。</p>
-                        <p class="text-slate-100 mt-2">请上传您的体系文件（Word/PDF），我将结合知识库中的 ISO 13485、ISO 14971、MDR 等标准，给出修改建议。</p>
+                        <p class="text-slate-100">您好！我是贴敷式胰岛素泵文档审核数字员工，专门审核贵企业内部的各类体系文档。</p>
+                        <p class="text-slate-100 mt-2">请上传您的文档（Word/PDF），选择审核领域（设计开发/风险管理/软件合规/注册申报/生产质量/体系建设），我将结合 ISO 13485、ISO 14971、IEC 62304、MDR、NMPA GMP 等标准给出专业修改建议。</p>
                     </div>
                 </div>
             </div>
@@ -183,7 +183,7 @@
 
         <!-- 底部信息 -->
         <footer class="text-center mt-6 text-slate-500 text-sm">
-            <p>医疗器械体系文件审核 Agent v2.0 | 请结合法规专家意见使用审核结果</p>
+            <p>贴敷式胰岛素泵文档审核数字员工 v3.0 | 六大领域智能审核 | 请结合法规专家意见使用审核结果</p>
         </footer>
     </div>
 
@@ -238,19 +238,30 @@
 
                 <!-- 处理选项 -->
                 <div id="processOptions" class="hidden mt-4">
-                    <label class="text-slate-300 text-sm mb-2 block">处理方式</label>
+                    <label class="text-slate-300 text-sm mb-2 block">审核领域</label>
                     <select id="processMode" class="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-slate-100">
-                        <option value="analyze_risk">风险管理专项审核（对照审核）</option>
-                        <option value="analyze_general">综合体系文件审核</option>
+                        <option value="risk_management">风险管理专项审核</option>
+                        <option value="design_dev">设计开发审核</option>
+                        <option value="software_compliance">软件合规审核</option>
+                        <option value="registration">注册申报审核</option>
+                        <option value="production_quality">生产质量审核</option>
+                        <option value="system_construction">体系建设审核</option>
                         <option value="extract">仅提取文本</option>
                         <option value="chat">添加到对话上下文</option>
                     </select>
-                    <p id="processHint" class="text-slate-500 text-sm mt-2">将对照知识库模板逐条给出修改建议（推荐用于风险管理文档）</p>
+                    <p id="processHint" class="text-slate-500 text-sm mt-2">对照ISO 14971:2019/YY/T 0316标准和知识库模板，逐条分析贴敷式胰岛素泵危害识别、风险评估、风险控制等章节</p>
 
-                    <!-- 审核类型说明 -->
+                    <!-- 文件类型选择（根据审核领域动态变化） -->
+                    <div id="docTypeContainer" class="mt-4">
+                        <label class="text-slate-300 text-sm mb-2 block">文件类型</label>
+                        <select id="docType" class="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-slate-100">
+                        </select>
+                    </div>
+
+                    <!-- 审核类型详细说明 -->
                     <div id="auditTypeHint" class="mt-3 bg-slate-700/30 rounded-lg p-3 text-sm">
-                        <p class="text-emerald-400 font-medium mb-1">风险管理专项审核</p>
-                        <p class="text-slate-400">对照ISO 14971标准和知识库模板，逐条分析危害识别、风险评估、风险控制等章节，给出具体修改建议</p>
+                        <p id="auditHintTitle" class="text-emerald-400 font-medium mb-1">风险管理专项审核</p>
+                        <p id="auditHintDesc" class="text-slate-400">对照ISO 14971:2019/YY/T 0316标准和知识库模板，逐条分析贴敷式胰岛素泵危害识别、风险评估、风险控制等章节，给出具体修改建议。检查过量输注、欠量输注、堵塞、电池故障等产品特有风险是否得到充分控制。</p>
                     </div>
                 </div>
 
@@ -650,8 +661,8 @@
                         </svg>
                     </div>
                     <div class="bg-slate-700/50 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[80%]">
-                        <p class="text-slate-100">您好！我是医疗器械体系文件审核助手，可以帮您审核质量手册、程序文件、SOP 等体系文件。</p>
-                        <p class="text-slate-100 mt-2">请上传您的体系文件（Word/PDF），我将结合知识库中的 ISO 13485、ISO 14971、MDR 等标准，给出修改建议。</p>
+                        <p class="text-slate-100">您好！我是贴敷式胰岛素泵文档审核数字员工，专门审核贵企业内部的各类体系文档。</p>
+                        <p class="text-slate-100 mt-2">请上传您的文档（Word/PDF），选择审核领域（设计开发/风险管理/软件合规/注册申报/生产质量/体系建设），我将结合 ISO 13485、ISO 14971、IEC 62304、MDR、NMPA GMP 等标准给出专业修改建议。</p>
                     </div>
                 </div>
             `;
@@ -784,36 +795,164 @@
             document.getElementById('uploadConfirmBtn').disabled = true;
         }
 
+        // 六大领域审核说明映射
+        const AUDIT_HINTS = {
+            risk_management: {
+                title: '风险管理专项审核',
+                hint: '对照ISO 14971:2019/YY/T 0316标准和知识库模板，逐条分析贴敷式胰岛素泵危害识别、风险评估、风险控制等章节。检查过量输注、欠量输注、堵塞、电池故障、蓝牙中断等产品特有风险是否得到充分控制。',
+                color: 'text-emerald-400'
+            },
+            design_dev: {
+                title: '设计开发审核',
+                hint: '对照ISO 13485:2016 7.3条款，审核DHF完整性、设计输入/输出追溯性、设计验证/确认充分性。特别关注药液输送精度设计、电气安全设计、软件架构设计和人因工程设计。',
+                color: 'text-blue-400'
+            },
+            software_compliance: {
+                title: '软件合规审核',
+                hint: '对照IEC 62304/YY/T 0664，审核软件安全分级、SDP/SRS/SADD/测试文档的完整性。特别关注固件控制算法安全、蓝牙通信协议可靠性、移动APP合规、OTA升级风控和网络安全。',
+                color: 'text-purple-400'
+            },
+            registration: {
+                title: '注册申报审核',
+                hint: '对照NMPA《胰岛素泵注册审查指导原则》和MDR 2017/745，审核技术文档、临床评价报告(CER)、说明书标签、生物相容性评价等注册申报资料的完整性和合规性。',
+                color: 'text-green-400'
+            },
+            production_quality: {
+                title: '生产质量审核',
+                hint: '对照NMPA GMP和ISO 13485 7.5，审核洁净车间管理、工艺验证(IQ/OQ/PQ)、批生产记录、灭菌验证、来料检验、成品检验等生产质量文档的合规性。',
+                color: 'text-orange-400'
+            },
+            system_construction: {
+                title: '体系建设审核',
+                hint: '对照ISO 13485:2016全条款，审核质量手册、程序文件、CAPA、内审、管理评审、不良事件报告、PMS等体系文件的完整性和层次结构。',
+                color: 'text-yellow-400'
+            },
+            extract: {
+                title: '',
+                hint: '仅提取文档文本内容，不进行审核分析',
+                color: ''
+            },
+            chat: {
+                title: '',
+                hint: '将文档添加到对话上下文，可在对话中进行讨论',
+                color: ''
+            }
+        };
+
+        // 六大领域对应的文件类型映射
+        const DOC_TYPES = {
+            risk_management: [
+                { value: 'rm_plan', label: '风险管理计划' },
+                { value: 'hazard_id', label: '危害识别报告' },
+                { value: 'risk_analysis', label: '风险分析报告 (FMEA)' },
+                { value: 'risk_control', label: '风险控制方案' },
+                { value: 'residual_risk', label: '剩余风险评价报告' },
+                { value: 'rm_report', label: '风险管理报告' },
+                { value: 'other_rm', label: '其他风险管理文件' },
+            ],
+            design_dev: [
+                { value: 'dd_plan', label: '设计开发计划' },
+                { value: 'design_input', label: '设计输入文件' },
+                { value: 'design_output', label: '设计输出文件（图纸/BOM等）' },
+                { value: 'design_review', label: '设计评审记录' },
+                { value: 'design_verif', label: '设计验证方案/报告' },
+                { value: 'design_valid', label: '设计确认方案/报告' },
+                { value: 'design_change', label: '设计变更记录' },
+                { value: 'design_transfer', label: '设计转移文件' },
+                { value: 'other_dd', label: '其他设计开发文件' },
+            ],
+            software_compliance: [
+                { value: 'sdp', label: '软件开发计划 (SDP)' },
+                { value: 'srs', label: '软件需求规格 (SRS)' },
+                { value: 'sadd', label: '软件架构设计文档' },
+                { value: 'sddd', label: '软件详细设计文档' },
+                { value: 'sw_test', label: '软件测试方案/报告' },
+                { value: 'scm_plan', label: '软件配置管理计划' },
+                { value: 'sw_pr_report', label: '软件问题解决报告' },
+                { value: 'sw_maint', label: '软件维护计划' },
+                { value: 'soup_mgmt', label: 'SOUP/OTS管理记录' },
+                { value: 'cybersec', label: '网络安全文档' },
+                { value: 'other_sw', label: '其他软件合规文件' },
+            ],
+            registration: [
+                { value: 'tech_req', label: '产品技术要求' },
+                { value: 'overview', label: '综述资料' },
+                { value: 'research', label: '研究资料' },
+                { value: 'cer', label: '临床评价报告 (CER)' },
+                { value: 'ifu_label', label: '产品说明书/标签' },
+                { value: 'biocomp', label: '生物相容性评价报告' },
+                { value: 'sterile_valid', label: '灭菌验证报告' },
+                { value: 'stability', label: '稳定性研究报告' },
+                { value: 'other_reg', label: '其他注册申报文件' },
+            ],
+            production_quality: [
+                { value: 'process_flow', label: '工艺流程图' },
+                { value: 'iq_oq_pq', label: '工艺验证方案/报告 (IQ/OQ/PQ)' },
+                { value: 'bmr', label: '批生产记录 (BMR)' },
+                { value: 'incoming_insp', label: '来料检验标准' },
+                { value: 'final_insp', label: '成品检验标准' },
+                { value: 'equipment_mgmt', label: '设备管理文件' },
+                { value: 'supplier_mgmt', label: '供应商管理文件' },
+                { value: 'sterile_batch', label: '灭菌批记录' },
+                { value: 'udi_mgmt', label: 'UDI标识管理文件' },
+                { value: 'other_pq', label: '其他生产质量文件' },
+            ],
+            system_construction: [
+                { value: 'quality_manual', label: '质量手册' },
+                { value: 'procedure_doc', label: '程序文件' },
+                { value: 'work_instruction', label: '作业指导书' },
+                { value: 'record_form', label: '记录表单' },
+                { value: 'internal_audit', label: '内审计划/报告' },
+                { value: 'mgmt_review', label: '管理评审报告' },
+                { value: 'capa_record', label: 'CAPA记录' },
+                { value: 'training_record', label: '培训记录' },
+                { value: 'pms_plan', label: '上市后监督计划 (PMS)' },
+                { value: 'document_control', label: '文件控制程序' },
+                { value: 'other_sc', label: '其他体系建设文件' },
+            ],
+        };
+
+        function updateDocTypeOptions(auditType) {
+            const docTypeSelect = document.getElementById('docType');
+            const docTypeContainer = document.getElementById('docTypeContainer');
+            const types = DOC_TYPES[auditType];
+
+            if (!types) {
+                docTypeContainer.classList.add('hidden');
+                return;
+            }
+
+            docTypeContainer.classList.remove('hidden');
+            docTypeSelect.innerHTML = types.map(t =>
+                `<option value="${t.value}">${t.label}</option>`
+            ).join('');
+        }
+
         document.getElementById('processMode').addEventListener('change', function() {
             const hint = document.getElementById('processHint');
             const auditHint = document.getElementById('auditTypeHint');
-            switch (this.value) {
-                case 'analyze_risk':
-                    hint.textContent = '将对照知识库模板逐条给出修改建议（推荐用于风险管理文档）';
-                    auditHint.classList.remove('hidden');
-                    auditHint.innerHTML = `
-                        <p class="text-emerald-400 font-medium mb-1">风险管理专项审核</p>
-                        <p class="text-slate-400">对照ISO 14971标准和知识库模板，逐条分析危害识别、风险评估、风险控制等章节，给出具体修改建议</p>
-                    `;
-                    break;
-                case 'analyze_general':
-                    hint.textContent = '综合审核体系文件的完整性、一致性和可操作性';
-                    auditHint.classList.remove('hidden');
-                    auditHint.innerHTML = `
-                        <p class="text-cyan-400 font-medium mb-1">综合体系文件审核</p>
-                        <p class="text-slate-400">审核文件的完整性、一致性、可操作性和证据链，涵盖ISO 13485、MDR、GMP等多个标准</p>
-                    `;
-                    break;
-                case 'extract':
-                    hint.textContent = '仅提取文档文本内容';
-                    auditHint.classList.add('hidden');
-                    break;
-                case 'chat':
-                    hint.textContent = '将文档添加到对话上下文';
-                    auditHint.classList.add('hidden');
-                    break;
+            const hintTitle = document.getElementById('auditHintTitle');
+            const hintDesc = document.getElementById('auditHintDesc');
+            const docTypeContainer = document.getElementById('docTypeContainer');
+            const info = AUDIT_HINTS[this.value] || AUDIT_HINTS['risk_management'];
+
+            hint.textContent = info.hint;
+
+            if (this.value === 'extract' || this.value === 'chat') {
+                auditHint.classList.add('hidden');
+                docTypeContainer.classList.add('hidden');
+            } else {
+                auditHint.classList.remove('hidden');
+                hintTitle.textContent = info.title;
+                hintTitle.className = info.color + ' font-medium mb-1';
+                hintDesc.textContent = info.hint;
+                // 更新文件类型下拉菜单
+                updateDocTypeOptions(this.value);
             }
         });
+
+        // 页面加载时初始化文件类型下拉菜单
+        updateDocTypeOptions('risk_management');
 
         async function confirmUpload() {
             if (!selectedFile) return;
@@ -830,17 +969,22 @@
                 let endpoint = '/api/upload';
                 let auditType = 'risk_management';
 
-                if (processMode === 'analyze_risk') {
+                // 六大审核领域
+                const AUDIT_MODES = ['risk_management', 'design_dev', 'software_compliance',
+                    'registration', 'production_quality', 'system_construction'];
+                if (AUDIT_MODES.includes(processMode)) {
                     endpoint = '/api/analyze';
-                    auditType = 'risk_management';
-                } else if (processMode === 'analyze_general') {
-                    endpoint = '/api/analyze';
-                    auditType = 'general';
+                    auditType = processMode;
                 }
 
                 // 如果是分析模式，添加审核类型参数
                 if (endpoint === '/api/analyze') {
                     formData.append('audit_type', auditType);
+                    // 同时传递文件类型
+                    const docType = document.getElementById('docType').value;
+                    if (docType) {
+                        formData.append('doc_type', docType);
+                    }
                 }
 
                 const progressBar = document.getElementById('progressBar');
@@ -870,8 +1014,16 @@
                     const fileName = selectedFile ? selectedFile.name : '未知文件';
                     closeUploadModal();
 
-                    if (processMode === 'analyze_risk' || processMode === 'analyze_general') {
-                        const auditTypeText = processMode === 'analyze_risk' ? '风险管理专项审核' : '综合体系审核';
+                    if (AUDIT_MODES.includes(processMode)) {
+                        const auditLabels = {
+                            risk_management: '风险管理专项审核',
+                            design_dev: '设计开发审核',
+                            software_compliance: '软件合规审核',
+                            registration: '注册申报审核',
+                            production_quality: '生产质量审核',
+                            system_construction: '体系建设审核'
+                        };
+                        const auditTypeText = auditLabels[processMode] || '体系审核';
                         addMessage('user', `请进行${auditTypeText}: ${fileName}`);
                         if (data.answer) {
                             // 保存审核结果用于导出

@@ -1,5 +1,70 @@
 # Code Writer Log
 
+## 2026-06-02 (2) - Feature: 添加文件类型级联选择器
+
+### Change Summary
+在上传模态框中添加"文件类型"下拉菜单，根据所选的审核领域动态显示该领域下的具体文件类型选项。
+
+### Files Modified
+- **frontend/index.html**: 
+  - 添加 `<select id="docType">` 文件类型下拉菜单（6大领域共60+种文件类型）
+  - 添加 `DOC_TYPES` 数据映射，每个领域7-11种具体文件类型
+  - 添加 `updateDocTypeOptions()` 函数实现级联切换
+  - 更新 `confirmUpload()` 将 `doc_type` 传入 FormData
+  - 选择"仅提取文本"或"添加到对话"时自动隐藏文件类型选择
+
+- **backend/main.py**:
+  - `/api/analyze` 端点新增 `doc_type` 可选参数
+  - 将 `doc_type` 传递给 `rag_retriever.analyze_document()`
+
+- **backend/rag_retriever.py**:
+  - `analyze_document()` 新增 `doc_type` 参数
+  - 添加 `_DOC_TYPE_LABELS` 字典映射文件类型代码到中文名
+  - 综合分析上下文中加入文件类型提示
+  - `_analyze_document_fallback()` 同步支持文件类型参数
+
+## 2026-05-19 - Memory Optimization: 文件上传分析 OOM 修复
+
+### Task Overview
+将原有"医疗器械体系文件审核 Agent"升级为专用的"贴敷式胰岛素泵文档审核数字员工"，覆盖六大审核领域。
+
+### Files Modified
+
+#### 1. backend/rag_retriever.py
+- 新增六大领域专项 Section Prompt（风险管理/设计开发/软件合规/注册申报/生产质量/体系建设）
+- 新增六大领域专项 Synthesis Prompt（综合分析报告模板）
+- 添加 SECTION_PROMPTS 和 SYNTHESIS_PROMPTS 字典映射
+- 更新 _audit_single_section 方法使用 Prompt 字典选择
+- 更新 analyze_document 方法使用领域专属综合分析 Prompt
+- 更新 _analyze_document_fallback 方法
+- 扩展知识库检索关键词覆盖所有六大领域和贴敷式胰岛素泵产品特性
+
+#### 2. backend/main.py
+- 更新 MEDICAL_DEVICE_SYSTEM_PROMPT 为贴敷式胰岛素泵企业背景和六大领域说明
+- 扩展 /api/analyze 端点 audit_type 验证支持全部六种审核类型
+- 更新 FastAPI 应用标题和版本号（3.0.0 → 3.1.0）
+- 更新 /info 端点返回审核领域列表
+- 更新服务启动/关闭日志消息
+
+#### 3. frontend/index.html
+- 页面标题改为"贴敷式胰岛素泵文档审核数字员工"
+- 审核领域下拉菜单从2个审核选项扩展为6个专项+提取/对话（共8个选项）
+- 每个领域配有详细的说明和颜色图标
+- 新增 AUDIT_HINTS 映射表，每个领域有独立的标题、描述和颜色
+- 更新 confirmUpload 函数支持六大领域 endpoint 映射
+- 更新欢迎消息和清空对话提示
+- 更新页脚版本号（v2.0 → v3.0）
+
+### Audit Domains Added
+| Domain Key | Chinese Name | Primary Standards |
+|---|---|---|
+| risk_management | 风险管理专项审核 | ISO 14971:2019/YY/T 0316 |
+| design_dev | 设计开发审核 | ISO 13485:2016 §7.3 |
+| software_compliance | 软件合规审核 | IEC 62304/YY/T 0664 |
+| registration | 注册申报审核 | NMPA/MDR 2017/745 |
+| production_quality | 生产质量审核 | NMPA GMP/ISO 13485 §7.5 |
+| system_construction | 体系建设审核 | ISO 13485:2016 全体系 |
+
 ## 2026-05-19 - Memory Optimization: 文件上传分析 OOM 修复
 
 ### Files Modified

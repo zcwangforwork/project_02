@@ -85,28 +85,33 @@ rag_retriever = None
 
 
 # ============== 医疗器械 System Prompt（通用聊天用） ==============
-MEDICAL_DEVICE_SYSTEM_PROMPT = """你是一个专业的医疗器械企业体系文件审核专家。
+MEDICAL_DEVICE_SYSTEM_PROMPT = """你是一个专业的贴敷式胰岛素泵生产企业文档审核数字员工（体系文件审核专家）。
 
-你的任务是审核用户上传的体系文件，并结合知识库中的标准文档给出修改建议。
+你的任务是审核用户在贴敷式胰岛素泵设计开发、风险管理、软件合规、注册申报、生产质量、体系建设等方面的内部文档，结合知识库中的标准文档给出专业修改建议。
 
-## 审核范围
-- ISO 13485:2016 医疗器械质量管理体系
-- ISO 14971:2019 医疗器械风险管理的应用
-- IEC 62304 医疗器械软件生命周期过程
-- EU MDR 2017/745 欧盟医疗器械法规
-- NMPA 医疗器械生产质量管理规范
-- FDA 21 CFR Part 820 质量体系法规
+## 企业背景
+用户所在企业研发和生产贴敷式胰岛素泵（patch insulin pump）— 一种可穿戴的胰岛素持续皮下输注设备，包含泵体、储液器、输注管路、嵌入式控制系统、蓝牙通信模块和配套移动端糖尿病管理APP。
+
+## 审核范围（六大领域）
+1. **设计开发**: ISO 13485 7.3设计控制、DHF管理、设计输入/输出/评审/验证/确认
+2. **风险管理**: ISO 14971:2019/YY/T 0316、危害识别、风险控制、FMEA、受益-风险分析
+3. **软件合规**: IEC 62304/YY/T 0664、软件安全分级、SDP/SRS/SADD、软件测试、网络安全
+4. **注册申报**: NMPA胰岛素泵注册审查指导原则、MDR 2017/745、技术文档、CER、临床评价
+5. **生产质量**: NMPA GMP、ISO 13485 7.5、工艺验证(IQ/OQ/PQ)、批记录、无菌生产、UDI
+6. **体系建设**: ISO 13485:2016全体系、质量手册、文件控制、CAPA、内审、PMS
 
 ## 审核原则
-1. **完整性检查**：文件是否覆盖相关法规条款的要求
+1. **完整性检查**：文件是否覆盖相关法规条款的全部要求
 2. **一致性检查**：文件内容是否相互协调、无矛盾
 3. **可操作性**：文件描述是否足够具体、可执行
 4. **证据链**：是否有相应的记录表单支撑执行证据
+5. **产品特异性**：是否充分考虑了贴敷式胰岛素泵的特殊风险和控制措施
 
 ## 重要提示
 - 直接给出审核结果，不要输出思考过程
 - 回答应专业、具体、可操作
-- 如果用户需要详细审核，请建议上传文件进行专项审核
+- 建议用户上传文件选择对应的专项审核领域以获得最精准的审核结果
+- 可审核的六大领域：设计开发、风险管理、软件合规、注册申报、生产质量、体系建设
 """
 
 
@@ -321,7 +326,7 @@ async def get_embeddings(texts: List[str]) -> List[List[float]]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    print("医疗器械体系文件审核 Agent 后端服务启动")
+    print("贴敷式胰岛素泵文档审核数字员工 后端服务启动")
     print(f"API URL: {config.api_url}")
     print(f"Model: {config.model}")
 
@@ -339,13 +344,13 @@ async def lifespan(app: FastAPI):
     if rag_retriever:
         await rag_retriever.close()
 
-    print("医疗器械体系文件审核 Agent 后端服务关闭")
+    print("贴敷式胰岛素泵文档审核数字员工 后端服务关闭")
 
 
 app = FastAPI(
-    title="医疗器械体系文件审核 Agent API",
-    description="医疗器械企业体系文件智能审核助手",
-    version="3.0.0",
+    title="贴敷式胰岛素泵文档审核数字员工 API",
+    description="贴敷式胰岛素泵企业文档智能审核系统 — 六大领域（设计开发/风险管理/软件合规/注册申报/生产质量/体系建设）",
+    version="3.1.0",
     lifespan=lifespan
 )
 
@@ -376,9 +381,13 @@ app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 async def root():
     """根路径 - 服务信息"""
     return {
-        "name": "医疗器械体系文件审核 Agent API",
-        "version": "3.0.0",
-        "docs": "/docs"
+        "name": "贴敷式胰岛素泵文档审核数字员工 API",
+        "version": "3.1.0",
+        "docs": "/docs",
+        "audit_domains": [
+            "risk_management", "design_dev", "software_compliance",
+            "registration", "production_quality", "system_construction"
+        ]
     }
 
 
@@ -510,7 +519,8 @@ async def analyze_document(
     file: UploadFile = File(...),
     question: str = Form("请审核这份体系文件，给出修改建议"),
     session_id: str = Form("default"),
-    audit_type: str = Form("risk_management")
+    audit_type: str = Form("risk_management"),
+    doc_type: str = Form("")
 ):
     """
     使用多轮审核流水线分析体系文件
@@ -544,9 +554,13 @@ async def analyze_document(
     if ext not in ['.docx', '.pdf']:
         raise HTTPException(status_code=400, detail=f"不支持的文件格式: {ext}")
 
-    # 验证审核类型
-    if audit_type not in ["risk_management", "general"]:
-        audit_type = "risk_management"
+    # 验证审核类型（六大领域 + general 保底）
+    VALID_AUDIT_TYPES = [
+        "risk_management", "design_dev", "software_compliance",
+        "registration", "production_quality", "system_construction", "general"
+    ]
+    if audit_type not in VALID_AUDIT_TYPES:
+        audit_type = "general"
 
     # 保存上传文件到临时目录（流式写入，避免全量加载到内存）
     tmp_path = None
@@ -575,7 +589,8 @@ async def analyze_document(
         result = await rag_retriever.analyze_document(
             user_document=text,
             user_filename=filename,
-            audit_type=audit_type
+            audit_type=audit_type,
+            doc_type=doc_type
         )
 
         # 构建检索到的文档信息
