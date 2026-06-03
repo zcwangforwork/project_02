@@ -1,5 +1,32 @@
 # Code Writer Log
 
+## 2026-06-03 09:53 - Enhancement: 基于DHF清单扩充审核文档类型
+
+### Change Summary
+根据 `胰岛素泵-DHF清单.xlsx`（100个文档，覆盖设计控制全生命周期），将系统中6大审核领域的文档类型从57个扩充至123个。
+
+### Files Modified
+1. **backend/rag_retriever.py** — `_DOC_TYPE_LABELS` 从57个条目扩充至123个
+2. **frontend/index.html** — `DOC_TYPES` 从57个条目扩充至123个
+3. **backend/main.py** — `MEDICAL_DEVICE_SYSTEM_PROMPT` 扩充审核范围描述
+4. **backend/rag_retriever.py** — `DESIGN_DEV_SECTION_PROMPT` 扩充设计开发审核范围
+5. **backend/rag_retriever.py** — `DESIGN_DEV_SYNTHESIS_PROMPT` 扩充DHF/DMR完整性检查项
+
+### 扩充明细
+| 审核领域 | 原有 | 扩充后 | 新增关键类型 |
+|----------|------|--------|-------------|
+| 风险管理 | 7 | 11 | 初步风险分析、风险分析管理总表、DFMEA |
+| 设计开发 | 9 | 54 | 设计策划/输入/输出/验证/转换/确认全阶段DHF+DMR文档 |
+| 软件合规 | 11 | 18 | 集成/系统/质量测试、接口安全测试、追溯矩阵 |
+| 注册申报 | 9 | 13 | EP清单、第三方检测报告(生物相容性/EMC/注册检验) |
+| 生产质量 | 10 | 13 | 灭菌确认、灭菌工艺验证、工装验收、生产检验SOP |
+| 体系建设 | 11 | 14 | 设计控制程序、风险管理程序、软件开发程序 |
+
+### Decision
+- 保持六大领域结构不变，在各领域内按DHF清单扩充文档类型
+- DMR文档（BOM、图纸、检验规范、生产WI等）归入设计开发领域
+- 设计转换相关文档（工艺验证计划、灭菌确认）同时在设计开发和生产质量中可选
+
 ## 2026-06-02 (2) - Feature: 添加文件类型级联选择器
 
 ### Change Summary

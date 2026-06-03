@@ -64,10 +64,20 @@ class RAGRetriever:
 [🔴 严重缺失 / 🟡 需要修改 / 🟢 基本符合]
 """
 
-    # 2. 设计开发专项审核（贴敷式胰岛素泵）
+    # 2. 设计开发专项审核（贴敷式胰岛素泵）— 覆盖设计控制全生命周期
     DESIGN_DEV_SECTION_PROMPT = """你是一个专业的贴敷式胰岛素泵生产企业体系文件审核专家，精通ISO 13485:2016第7.3条设计开发控制和医疗器械设计控制要求。
 
 你的任务是对用户文档的**当前章节**进行深入审核，给出详细的差距分析和修改建议。
+
+## 审核范围（设计控制全生命周期）
+- **设计策划**: 项目开发计划书、市场调研与产品定义、可行性研究报告、专利分析、立项评审、注册路径策略、风险管理计划
+- **设计输入**: 用户需求、设计输入文件、硬件/结构/软件/包装各专业设计需求、产品需求追溯矩阵(RTM)
+- **设计输出（DHF+DMR）**: 硬件/结构/软件/包装设计方案、软件编码规范、BOM表/物料清单、物料规格书/图纸、产品图纸(总装图/爆炸图/零件图/原理图)、设备清单及SOP、工装图纸、检验规范、生产WI、软件版本包、初包装材料确认、设计输出清单
+- **设计评审**: 各阶段设计评审记录
+- **设计验证**: 验证计划、性能验证、输注精度验证、包装验证、使用期限/货架有效期验证、运输验证、可沥滤物测试
+- **设计转换**: 转换计划、转换报告、工艺验证计划、灭菌确认
+- **设计确认**: 确认方案/报告、临床试验、可用性测试
+- **设计变更**: 变更记录及影响评估
 
 ## 贴敷式胰岛素泵设计开发特殊关注点
 - 产品结构设计（泵体/储液器/输注管路/驱动机构/控制系统）
@@ -83,7 +93,7 @@ class RAGRetriever:
 2. 检查设计输出是否满足设计输入要求
 3. 检查设计评审、验证、确认活动的充分性
 4. 检查设计变更控制的规范性
-5. 检查DHF（设计历史文档）的完整性
+5. 检查DHF（设计历史文档）与DMR（器械主记录）的完整性和一致性
 
 ## 输出格式（严格按此格式）
 
@@ -404,16 +414,18 @@ class RAGRetriever:
 ## 三、需要修改项汇总（🟡 需要修改）
 ## 四、基本符合项（🟢 基本符合）
 
-## 五、DHF完整性检查
-[逐项检查设计历史文档应包含的关键文档：
-- 设计开发计划
-- 设计输入（用户需求/产品规格/法规要求）
-- 设计输出（图纸/BOM/软件代码/工艺文件）
-- 设计评审记录
-- 设计验证方案和报告（含输注精度验证/环境试验/EMC测试）
-- 设计确认方案和报告（含临床试验/可用性测试）
-- 设计变更记录
-- 设计转移文件
+## 五、DHF/DMR完整性检查
+[逐项检查设计历史文档(DHF)和器械主记录(DMR)应包含的关键文档：
+**设计策划**: 项目开发计划书 / 市场调研与产品定义 / 可行性研究报告 / 专利分析 / 立项评审 / 注册路径策略 / 风险管理计划
+**设计输入**: 用户需求 / 设计输入文件 / 硬件需求 / 结构需求 / 软件需求 / 包装需求 / 产品需求追溯矩阵(RTM)
+**设计输出（DHF）**: 硬件方案 / 结构方案 / 软件方案 / 软件编码规范 / 包装方案 / 初包装材料确认报告 / 设计输出清单 / 产品技术要求
+**设计输出（DMR）**: BOM表 / 物料规格书及图纸 / 产品图纸(总装图/爆炸图/零件图/原理图) / 工艺流程图 / 设备清单及验证SOP / 工装图纸及验收记录 / 检验规范(进货/过程/出厂) / 生产工艺作业指导书 / 软件版本包 / 标签及使用说明书
+**设计验证**: 验证计划 / 性能验证 / 输注精度验证 / 包装及标识验证 / 使用期限验证 / 货架有效期验证 / 包装运输验证 / 可沥滤物测试 / 检验方法学验证
+**设计转换**: 转换计划 / 转换报告 / 工艺验证计划 / 灭菌确认方案及报告
+**设计确认**: 确认方案及报告 / 临床试验方案及报告 / 可用性测试方案及报告
+**设计评审与变更**: 各阶段设计评审记录 / 设计变更记录
+**供应商管理**: 合格供应商清单 / 供应商资质及审核报告
+**第三方检测**: 生物相容性试验报告 / 药液相容性试验报告 / 安规EMC环境可靠性检测报告 / 注册检验报告
 ]
 
 ## 六、设计追溯矩阵检查
@@ -930,35 +942,91 @@ class RAGRetriever:
 
         return '\n'.join(summary_parts[:8])
 
-    # 文件类型显示名映射
+    # 文件类型显示名映射（基于DHF清单扩充，覆盖设计控制全生命周期）
     _DOC_TYPE_LABELS = {
-        # 风险管理
+        # ===== 风险管理 =====
         'rm_plan': '风险管理计划', 'hazard_id': '危害识别报告', 'risk_analysis': '风险分析报告 (FMEA)',
         'risk_control': '风险控制方案', 'residual_risk': '剩余风险评价报告', 'rm_report': '风险管理报告',
+        'prelim_risk_analysis': '初步风险分析', 'risk_analysis_table': '产品风险分析和管理总表',
+        'cybersec_risk_table': '网络安全风险分析和管理总表', 'dfmea': 'DFMEA设计失效模式与影响分析',
         'other_rm': '其他风险管理文件',
-        # 设计开发
-        'dd_plan': '设计开发计划', 'design_input': '设计输入文件', 'design_output': '设计输出文件',
-        'design_review': '设计评审记录', 'design_verif': '设计验证方案/报告', 'design_valid': '设计确认方案/报告',
-        'design_change': '设计变更记录', 'design_transfer': '设计转移文件', 'other_dd': '其他设计开发文件',
-        # 软件合规
-        'sdp': '软件开发计划', 'srs': '软件需求规格', 'sadd': '软件架构设计文档', 'sddd': '软件详细设计文档',
-        'sw_test': '软件测试方案/报告', 'scm_plan': '软件配置管理计划', 'sw_pr_report': '软件问题解决报告',
-        'sw_maint': '软件维护计划', 'soup_mgmt': 'SOUP/OTS管理记录', 'cybersec': '网络安全文档',
+        # ===== 设计开发（按设计控制阶段组织：策划→输入→输出→验证→转换→确认） =====
+        # 设计策划
+        'dd_plan': '项目开发计划书', 'market_research': '市场调研与产品定义',
+        'feasibility_report': '项目可行性研究报告', 'patent_analysis': '专利分析报告',
+        'project_approval': '立项及评审记录', 'registration_strategy': '注册路径策略',
+        # 设计输入
+        'design_input': '设计输入文件', 'user_requirements': '用户需求',
+        'hardware_req': '硬件设计需求', 'structure_req': '结构设计需求',
+        'sw_design_req': '软件设计需求', 'packaging_req': '包装及标识设计需求',
+        # 设计输出 — DHF
+        'design_output': '设计输出文件', 'hardware_design': '硬件设计方案',
+        'structure_design': '结构设计方案', 'sw_design': '软件设计方案',
+        'sw_coding_std': '软件编码规范', 'packaging_design': '包装及标识设计方案',
+        'packaging_material': '初包装材料选择与确认报告', 'design_output_checklist': '设计输出清单',
+        # 设计输出 — DMR
+        'bom': 'BOM表/物料清单', 'material_spec': '物料规格书/图纸',
+        'product_drawings': '产品图纸(总装图/爆炸图/零件图/原理图)',
+        'equipment_list': '生产检验设备清单及验证SOP', 'tooling_drawings': '工装图纸及验收记录',
+        'inspection_specs': '检验规范(进货/过程/出厂)', 'production_wi': '生产工艺作业指导书',
+        'sw_version_pkg': '软件版本包',
+        # 设计验证
+        'design_verif_plan': '设计验证计划', 'design_verif': '设计验证方案/报告',
+        'performance_verif': '性能验证方案/报告', 'infusion_accuracy_verif': '输注准确性性能验证',
+        'packaging_verif': '包装及标识验证方案/报告', 'service_life_verif': '使用期限验证方案/报告',
+        'shelf_life_verif': '货架有效期验证方案/报告', 'transport_verif': '包装运输验证方案/报告',
+        'leachable_test': '可沥滤物测试方案/报告',
+        # 设计转换
+        'design_transfer_plan': '设计转换计划', 'design_transfer': '设计转换文件',
+        'design_transfer_report': '设计转换报告', 'process_valid_plan': '工艺验证计划',
+        'sterilization_valid': '灭菌确认方案/报告',
+        # 设计确认
+        'design_valid': '设计确认方案/报告', 'clinical_trial': '临床试验方案/报告',
+        'usability_test': '可用性测试方案/报告',
+        # 评审/变更/追溯
+        'design_review': '设计评审记录', 'design_change': '设计变更记录',
+        'product_rtm': '产品需求追溯矩阵(RTM)',
+        # 其它支持文档
+        'product_tech_req': '产品技术要求', 'test_method_valid': '检验方法学验证方案/报告',
+        'performance_research': '性能研究相关记录', 'qualified_supplier_list': '合格供应商清单',
+        'supplier_qualification': '供应商资质及审核报告', 'other_dd': '其他设计开发文件',
+        # ===== 软件合规 =====
+        'sdp': '软件开发计划(SDP)', 'srs': '软件需求规格(SRS)', 'sadd': '软件架构设计文档(SADD)',
+        'sddd': '软件详细设计文档(SDDD)', 'sw_test': '软件单元测试方案/报告',
+        'sw_integration_test': '软件集成测试方案/报告', 'sw_system_test': '软件系统测试方案/报告',
+        'sw_quality_test': '软件质量测试方案/报告', 'scm_plan': '软件配置管理计划(SCMP)',
+        'sw_pr_report': '软件问题解决报告', 'sw_maint': '软件维护计划',
+        'soup_mgmt': 'SOUP/OTS管理记录', 'cybersec': '网络安全文档',
+        'cybersec_test': '网络安全测试方案/报告', 'sw_interface_cybersec_test': '软件接口网络安全测试方案/报告',
+        'sw_trace_matrix': '软件开发追溯表/软件需求追溯矩阵',
+        'cybersec_trace': '网络安全追溯表',
         'other_sw': '其他软件合规文件',
-        # 注册申报
-        'tech_req': '产品技术要求', 'overview': '综述资料', 'research': '研究资料', 'cer': '临床评价报告',
-        'ifu_label': '产品说明书/标签', 'biocomp': '生物相容性评价报告', 'sterile_valid': '灭菌验证报告',
-        'stability': '稳定性研究报告', 'other_reg': '其他注册申报文件',
-        # 生产质量
-        'process_flow': '工艺流程图', 'iq_oq_pq': '工艺验证方案/报告', 'bmr': '批生产记录',
-        'incoming_insp': '来料检验标准', 'final_insp': '成品检验标准', 'equipment_mgmt': '设备管理文件',
-        'supplier_mgmt': '供应商管理文件', 'sterile_batch': '灭菌批记录', 'udi_mgmt': 'UDI标识管理文件',
+        # ===== 注册申报 =====
+        'ep_checklist': '医疗器械安全和性能基本原则(EP)清单',
+        'tech_req': '产品技术要求', 'overview': '综述资料', 'research': '研究资料',
+        'cer': '临床评价报告(CER)', 'ifu_label': '产品说明书/标签',
+        'biocomp': '生物相容性评价报告', 'sterile_valid': '灭菌验证报告',
+        'stability': '稳定性研究报告/加速老化报告',
+        'third_party_biocomp': '生物相容性/药液相容性试验报告(第三方)',
+        'third_party_emc': '安规/EMC/环境可靠性检测报告(第三方)',
+        'third_party_reg_test': '注册检验报告(第三方)',
+        'other_reg': '其他注册申报文件',
+        # ===== 生产质量 =====
+        'process_flow': '工艺流程图', 'iq_oq_pq': '工艺验证方案/报告(IQ/OQ/PQ)',
+        'bmr': '批生产记录(BMR)', 'incoming_insp': '来料检验标准', 'final_insp': '成品检验标准',
+        'equipment_mgmt': '设备管理文件', 'supplier_mgmt': '供应商管理文件',
+        'sterile_batch': '灭菌批记录', 'udi_mgmt': 'UDI标识管理文件',
+        'sterilization_process_valid': '灭菌工艺验证方案/报告',
+        'tooling_acceptance': '工装验收记录', 'production_inspection_sop': '生产/检验SOP',
         'other_pq': '其他生产质量文件',
-        # 体系建设
+        # ===== 体系建设 =====
         'quality_manual': '质量手册', 'procedure_doc': '程序文件', 'work_instruction': '作业指导书',
         'record_form': '记录表单', 'internal_audit': '内审计划/报告', 'mgmt_review': '管理评审报告',
-        'capa_record': 'CAPA记录', 'training_record': '培训记录', 'pms_plan': '上市后监督计划',
-        'document_control': '文件控制程序', 'other_sc': '其他体系建设文件',
+        'capa_record': 'CAPA记录', 'training_record': '培训记录', 'pms_plan': '上市后监督计划(PMS)',
+        'document_control': '文件控制程序',
+        'design_control_procedure': '设计控制程序', 'risk_mgmt_procedure': '风险管理程序',
+        'sw_dev_procedure': '软件开发程序',
+        'other_sc': '其他体系建设文件',
     }
 
     async def analyze_document(
