@@ -7,18 +7,22 @@ import json
 import asyncio
 import base64
 import shutil
-from typing import List, Dict, Optional, Any
+import gc
+import logging
+from typing import List, Dict, Optional, Any, Tuple
 from contextlib import asynccontextmanager
 from pathlib import Path
 import tempfile
 
 import httpx
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+
+logger = logging.getLogger(__name__)
 
 # ============== 配置管理 ==============
 # API Key 优先从环境变量读取，不存在时使用默认值（本地开发用）
@@ -31,7 +35,7 @@ class Config:
         self.api_url = os.getenv("OPENAI_API_URL", "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions")
         self.embedding_url = os.getenv("EMBEDDING_API_URL", "https://ark.cn-beijing.volces.com/api/coding/v3/embeddings/multimodal")
         self.api_key = _DEFAULT_API_KEY
-        self.model = os.getenv("OPENAI_MODEL", "glm-5.1")
+        self.model = os.getenv("OPENAI_MODEL", "deepseek-v4-pro")
         self.embedding_model = os.getenv("EMBEDDING_MODEL", "doubao-embedding-vision-250615")
         self.timeout = float(os.getenv("REQUEST_TIMEOUT", "60"))
 
@@ -158,6 +162,160 @@ class ConversationHistory:
 
 
 conversation_manager = ConversationHistory()
+
+
+# ============== 逐段审核状态管理 ==============
+class SegmentState:
+    """单个会话的逐段审核状态"""
+    def __init__(self, document_text: str, filename: str, audit_type: str, doc_type: str, segment_size: int = 4000):
+        self.document_text = document_text
+        self.filename = filename
+        self.audit_type = audit_type
+        self.doc_type = doc_type
+        self.segment_size = segment_size
+        self.current_position = 0
+        self.segment_results: List[Dict] = []
+        self.total_segments = self._calculate_total_segments()
+
+    def _calculate_total_segments(self) -> int:
+        """计算文档将被分成多少段"""
+        if not self.document_text:
+            return 0
+        total = 0
+        pos = 0
+        text = self.document_text
+        while pos < len(text):
+            end = self._find_segment_end(text, pos)
+            total += 1
+            pos = end
+        return total
+
+    def _find_segment_end(self, text: str, start: int) -> int:
+        """找到段落结束位置，尽量在段落或句子边界断开"""
+        target = min(start + self.segment_size, len(text))
+        if target >= len(text):
+            return len(text)
+
+        # 在 target 附近查找最佳断开点
+        search_end = min(target + 500, len(text))
+        # 优先级：双换行 > 单换行 > 句号 > target 位置
+        best = target
+        search_start = max(start + self.segment_size // 2, start)
+
+        # 1. 双换行（段落边界）
+        pos = text.find('\n\n', search_start, search_end)
+        if pos != -1 and pos < target + 300:
+            return pos + 2
+
+        # 2. 单换行
+        pos = text.find('\n', search_start, search_end)
+        if pos != -1 and pos < target + 200:
+            return pos + 1
+
+        # 3. 句号后
+        for p in ['. ', '。', '！', '？', '! ', '? ']:
+            pos = text.rfind(p, search_start, search_end)
+            if pos != -1 and abs(pos - target) < 300:
+                return pos + len(p)
+
+        return target
+
+    def get_next_segment(self) -> Optional[Tuple[str, int, int, int, int]]:
+        """
+        获取下一个文本段落
+
+        Returns:
+            (text, segment_index, total_segments, start_pos, end_pos) 或 None（已完成）
+        """
+        if self.current_position >= len(self.document_text):
+            return None
+
+        start = self.current_position
+        end = self._find_segment_end(self.document_text, start)
+        segment_text = self.document_text[start:end].strip()
+        self.current_position = end
+
+        segment_index = len(self.segment_results) + 1
+        return (segment_text, segment_index, self.total_segments, start, end)
+
+    def add_result(self, result: Dict):
+        """保存段落审核结果"""
+        self.segment_results.append(result)
+
+    def get_progress(self) -> Dict:
+        """获取当前进度信息"""
+        total_chars = len(self.document_text)
+        progress_pct = round(self.current_position / total_chars * 100, 1) if total_chars > 0 else 100.0
+        return {
+            "current_position": self.current_position,
+            "total_chars": total_chars,
+            "progress_pct": progress_pct,
+            "segments_completed": len(self.segment_results),
+            "total_segments": self.total_segments,
+            "is_complete": self.current_position >= total_chars
+        }
+
+
+class SegmentManager:
+    """逐段审核状态管理器"""
+    def __init__(self):
+        self._states: Dict[str, SegmentState] = {}
+
+    def create(self, session_id: str, document_text: str, filename: str, audit_type: str, doc_type: str, segment_size: int = 4000) -> SegmentState:
+        state = SegmentState(document_text, filename, audit_type, doc_type, segment_size)
+        self._states[session_id] = state
+        return state
+
+    def get(self, session_id: str) -> Optional[SegmentState]:
+        return self._states.get(session_id)
+
+    def remove(self, session_id: str):
+        if session_id in self._states:
+            del self._states[session_id]
+            gc.collect()
+
+
+segment_manager = SegmentManager()
+
+
+def smart_split_text(text: str, segment_size: int = 4000) -> List[Tuple[int, int]]:
+    """
+    将文本按 segment_size 智能分割，返回每段的 (start, end) 位置列表。
+    尽量在段落边界或句子边界断开。
+    """
+    segments = []
+    pos = 0
+    while pos < len(text):
+        target = min(pos + segment_size, len(text))
+        if target >= len(text):
+            segments.append((pos, len(text)))
+            break
+
+        search_end = min(target + 500, len(text))
+        search_start = max(pos + segment_size // 2, pos)
+        best = target
+
+        # 1. 双换行（段落边界）
+        found = text.find('\n\n', search_start, search_end)
+        if found != -1 and found < target + 300:
+            best = found + 2
+        else:
+            # 2. 单换行
+            found = text.find('\n', search_start, search_end)
+            if found != -1 and found < target + 200:
+                best = found + 1
+            else:
+                # 3. 句号后
+                for p in ['. ', '。', '！', '？', '! ', '? ']:
+                    found = text.rfind(p, search_start, search_end)
+                    if found != -1 and abs(found - target) < 300:
+                        best = found + len(p)
+                        break
+
+        segments.append((pos, best))
+        pos = best
+
+    return segments
 
 
 # ============== 初始化向量存储 ==============
@@ -427,7 +585,7 @@ async def chat(request: ChatRequest, session_id: str = "default"):
         choice = choices[0]
         message = choice.get("message", {})
         answer = message.get("content", "")
-        # GLM-5.1 模型：当 content 为空时，从 reasoning_content 提取实际回答
+        # DeepSeek-V4-Pro 模型：当 content 为空时，从 reasoning_content 提取实际回答
         if not answer:
             reasoning = message.get("reasoning_content", "")
             if reasoning:
@@ -633,6 +791,332 @@ async def analyze_document(
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+
+# ============== 逐段审核 API ==============
+@app.post("/api/analyze-segment")
+async def analyze_segment(
+    file: Optional[UploadFile] = File(None),
+    session_id: str = Form("default"),
+    audit_type: str = Form("risk_management"),
+    doc_type: str = Form(""),
+    segment_size: str = Form("4000"),  # 接收为字符串，手动转换
+    action: str = Form("start"),  # "start"（首次上传）或 "continue"（继续下一段）
+    segment_size_q: Optional[int] = Query(None, alias="segment_size", description="每段字符数（Query参数，优先于Form参数）")
+):
+    """
+    逐段审核文档：每次只审核文档的一个段落，支持断点续审
+
+    - action="start": 上传文件并审核第一段
+    - action="continue": 继续审核下一段
+
+    Returns:
+        段落审核结果 + 进度信息
+    """
+    # Query 参数优先，否则从 Form 参数手动转换
+    if segment_size_q is not None:
+        seg_size_val = segment_size_q
+    else:
+        try:
+            seg_size_val = int(segment_size)
+        except (ValueError, TypeError):
+            seg_size_val = 4000
+
+    if not rag_retriever:
+        raise HTTPException(status_code=503, detail="向量库未加载，请稍后重试")
+
+    VALID_AUDIT_TYPES = [
+        "risk_management", "design_dev", "software_compliance",
+        "registration", "production_quality", "system_construction", "general"
+    ]
+    if audit_type not in VALID_AUDIT_TYPES:
+        audit_type = "general"
+
+    if seg_size_val < 1000:
+        seg_size_val = 1000
+    if seg_size_val > 8000:
+        seg_size_val = 8000
+
+    # 获取审核类型中文标签
+    doc_type_label = ""
+    if doc_type and rag_retriever:
+        doc_type_label = rag_retriever._DOC_TYPE_LABELS.get(doc_type, doc_type)
+
+    if action == "start":
+        # ===== 首次上传：提取文本、创建状态、审核第一段 =====
+        if not file:
+            raise HTTPException(status_code=400, detail="action=start 需要上传文件")
+
+        filename = file.filename or ""
+        ext = Path(filename).suffix.lower()
+        if ext not in ['.docx', '.pdf']:
+            raise HTTPException(status_code=400, detail=f"不支持的文件格式: {ext}")
+
+        # 保存并提取文本
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                while True:
+                    chunk = await file.read(64 * 1024)
+                    if not chunk:
+                        break
+                    tmp.write(chunk)
+                tmp_path = tmp.name
+        except Exception:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+
+        try:
+            from doc_processor import extract_text
+            text = extract_text(tmp_path)
+            if not text or len(text.strip()) < 50:
+                raise HTTPException(status_code=400, detail="文档内容过少或无法提取文本")
+
+            # 创建逐段审核状态
+            state = segment_manager.create(
+                session_id=session_id,
+                document_text=text,
+                filename=filename,
+                audit_type=audit_type,
+                doc_type=doc_type,
+                segment_size=seg_size_val
+            )
+
+            # 获取第一段
+            seg = state.get_next_segment()
+            if not seg:
+                raise HTTPException(status_code=400, detail="文档内容为空")
+            segment_text, seg_idx, total_segs, start_pos, end_pos = seg
+
+            # 审核第一段
+            result = await rag_retriever.audit_segment(
+                segment_text=segment_text,
+                segment_index=seg_idx,
+                total_segments=total_segs,
+                start_pos=start_pos,
+                end_pos=end_pos,
+                audit_type=audit_type,
+                doc_type_label=doc_type_label
+            )
+            state.add_result(result)
+
+            progress = state.get_progress()
+
+            # 构建检索文档信息
+            retrieved_docs_info = _build_retrieved_info(result.get("relevant_docs", []))
+
+            return {
+                "filename": filename,
+                "segment_answer": result["answer"],
+                "segment_index": seg_idx,
+                "total_segments": total_segs,
+                "start_pos": start_pos,
+                "end_pos": end_pos,
+                "progress": progress,
+                "action": "start",
+                "retrieved_docs": retrieved_docs_info,
+                "audit_type": audit_type,
+                "full_text_length": len(text)
+            }
+
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    elif action == "continue":
+        # ===== 继续审核：获取下一段 =====
+        state = segment_manager.get(session_id)
+        if not state:
+            raise HTTPException(status_code=404, detail="未找到审核状态，请先上传文件开始审核")
+
+        seg = state.get_next_segment()
+        if not seg:
+            return {
+                "segment_answer": "",
+                "segment_index": 0,
+                "total_segments": state.total_segments,
+                "progress": state.get_progress(),
+                "action": "complete",
+                "message": "文档已全部审核完成，可生成综合报告"
+            }
+
+        segment_text, seg_idx, total_segs, start_pos, end_pos = seg
+
+        result = await rag_retriever.audit_segment(
+            segment_text=segment_text,
+            segment_index=seg_idx,
+            total_segments=total_segs,
+            start_pos=start_pos,
+            end_pos=end_pos,
+            audit_type=state.audit_type,
+            doc_type_label=doc_type_label
+        )
+        state.add_result(result)
+
+        progress = state.get_progress()
+        retrieved_docs_info = _build_retrieved_info(result.get("relevant_docs", []))
+
+        return {
+            "filename": state.filename,
+            "segment_answer": result["answer"],
+            "segment_index": seg_idx,
+            "total_segments": total_segs,
+            "start_pos": start_pos,
+            "end_pos": end_pos,
+            "progress": progress,
+            "action": "continue",
+            "retrieved_docs": retrieved_docs_info,
+            "audit_type": state.audit_type
+        }
+
+    else:
+        raise HTTPException(status_code=400, detail=f"不支持的操作: {action}，仅支持 start 或 continue")
+
+
+def _build_retrieved_info(relevant_docs: List[Dict]) -> List[Dict]:
+    """从检索结果构建简要的文档信息列表"""
+    seen_sources = set()
+    info = []
+    for doc in relevant_docs:
+        source = doc.get("source", "未知")
+        if source not in seen_sources:
+            seen_sources.add(source)
+            info.append({
+                "source": source,
+                "preview": doc.get("text", "")[:200]
+            })
+    return info
+
+
+@app.get("/api/segment-status/{session_id}")
+async def segment_status(session_id: str):
+    """查询逐段审核进度"""
+    state = segment_manager.get(session_id)
+    if not state:
+        return {"exists": False, "message": "未找到审核状态"}
+    return {
+        "exists": True,
+        "filename": state.filename,
+        "audit_type": state.audit_type,
+        "progress": state.get_progress()
+    }
+
+
+@app.post("/api/segment-synthesize")
+async def segment_synthesize(
+    session_id: str = Form("default")
+):
+    """
+    生成逐段审核的综合报告
+
+    将所有段落审核结果汇总，调用 LLM 生成一份完整的综合审核报告
+    """
+    if not rag_retriever:
+        raise HTTPException(status_code=503, detail="向量库未加载，请稍后重试")
+
+    state = segment_manager.get(session_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="未找到审核状态，请先上传文件开始审核")
+
+    if not state.segment_results:
+        raise HTTPException(status_code=400, detail="还没有审核结果，请先完成至少一段审核")
+
+    # 构建综合上下文
+    doc_type_label = ""
+    if state.doc_type and rag_retriever:
+        doc_type_label = rag_retriever._DOC_TYPE_LABELS.get(state.doc_type, state.doc_type)
+
+    parts = [
+        f"# 文档逐段审核综合报告",
+        f"**文件名**: {state.filename}",
+        f"**审核类型**: {state.audit_type}",
+        f"**文件类型**: {doc_type_label}",
+        f"**文档总长度**: {len(state.document_text)} 字符",
+        f"**审核段落数**: {len(state.segment_results)}",
+        "",
+        "---",
+        "",
+        "以下是各段落的审核结果摘要：",
+        ""
+    ]
+
+    for result in state.segment_results:
+        seg_idx = result.get("segment_index", "?")
+        answer = result.get("answer", "")
+        # 每段截取前1500字符作为综合输入
+        summary = answer[:1500] if answer else "(无审核结果)"
+        parts.append(f"## 第 {seg_idx} 段审核结果（摘要）")
+        parts.append(summary)
+        parts.append("")
+
+    parts.append("---")
+    parts.append("请基于以上各段审核结果，生成一份完整的综合审核报告。")
+    parts.append("报告要求：")
+    parts.append("1. 综合概述：概述整个文档的内容和审核范围")
+    parts.append("2. 关键发现汇总：汇总各段中发现的关键问题（按严重度排序）")
+    parts.append("3. 量化评分：对文档整体进行5维度评分（完整性/规范性/可追溯性/一致性/可操作性）")
+    parts.append("4. 修改建议优先级：按P0/P1/P2给出修改优先级建议")
+    parts.append("5. 关联法规条款索引")
+
+    synthesis_context = '\n'.join(parts)
+
+    synthesis_prompt = f"""你是一个专业的贴敷式胰岛素泵生产企业文档审核专家。
+
+请根据以下各段落审核结果，生成一份完整的综合审核报告。
+
+注意：
+- 综合各段发现，识别跨段落的共性问题
+- 对严重问题进行汇总和优先级排序
+- 给出文档整体的合规性评价
+- 报告应采用Markdown格式，结构清晰"""
+
+    try:
+        synthesis_answer = await rag_retriever._call_llm(
+            system_prompt=synthesis_prompt,
+            user_content=synthesis_context,
+            max_tokens=12000,
+            temperature=0.5
+        )
+    except Exception as e:
+        logger.error(f"综合报告生成失败: {e}")
+        # 降级：手动拼接所有段落结果
+        fallback_parts = [f"# 审核报告 — {state.filename}", ""]
+        for result in state.segment_results:
+            fallback_parts.append(f"## 第 {result.get('segment_index', '?')} 段")
+            fallback_parts.append(result.get("answer", ""))
+            fallback_parts.append("")
+        synthesis_answer = '\n'.join(fallback_parts)
+
+    # 追加各段详细结果
+    full_report = synthesis_answer + "\n\n---\n\n# 各段落详细审核结果\n\n"
+    for result in state.segment_results:
+        seg_idx = result.get("segment_index", "?")
+        full_report += f"## 第 {seg_idx} 段\n\n"
+        answer = result.get("answer", "")
+        # 单段结果截断至3000字符
+        full_report += (answer[:3000] if len(answer) > 3000 else answer)
+        full_report += "\n\n---\n\n"
+
+    # 限制总报告大小
+    MAX_REPORT = 50000
+    if len(full_report) > MAX_REPORT:
+        full_report = full_report[:MAX_REPORT] + "\n\n⚠️ 报告过长已截断"
+
+    return {
+        "synthesis_answer": synthesis_answer,
+        "full_report": full_report,
+        "segment_count": len(state.segment_results),
+        "filename": state.filename,
+        "audit_type": state.audit_type
+    }
+
+
+@app.post("/api/segment-reset")
+async def segment_reset(session_id: str = Form("default")):
+    """重置逐段审核状态"""
+    segment_manager.remove(session_id)
+    return {"message": "审核状态已重置", "session_id": session_id}
 
 
 # ============== Markdown 转 DOCX 辅助函数 ==============

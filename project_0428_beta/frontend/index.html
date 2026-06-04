@@ -136,6 +136,44 @@
                 </div>
             </div>
 
+            <!-- 逐段审核进度条 -->
+            <div id="segmentProgressBar" class="hidden border-t border-slate-700/50 px-4 py-3 bg-slate-800/50">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-slate-300 text-sm font-medium">逐段审核进度</span>
+                    <span class="text-slate-400 text-sm" id="segmentProgressLabel">0/0 段</span>
+                </div>
+                <div class="bg-slate-700/50 rounded-full h-2 overflow-hidden">
+                    <div id="segmentProgressFill" class="bg-gradient-to-r from-emerald-500 to-cyan-500 h-full transition-all duration-500" style="width: 0%"></div>
+                </div>
+                <div class="flex justify-between items-center mt-2">
+                    <p id="segmentProgressText" class="text-slate-500 text-xs">准备开始审核...</p>
+                    <div class="flex gap-2">
+                        <button
+                            id="continueSegmentBtn"
+                            onclick="handleContinueBtnClick()"
+                            class="hidden bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-600 hover:to-cyan-600 text-white text-sm px-4 py-1.5 rounded-lg transition-colors"
+                        >
+                            继续审核下一段
+                        </button>
+                        <button
+                            id="synthesizeBtn"
+                            onclick="synthesizeSegmentReport()"
+                            class="hidden bg-amber-600/30 hover:bg-amber-500/40 text-amber-300 text-sm px-4 py-1.5 rounded-lg transition-colors border border-amber-500/30"
+                        >
+                            生成综合报告
+                        </button>
+                        <button
+                            id="segmentExportBtn"
+                            onclick="exportSegmentReview()"
+                            class="hidden bg-amber-600/30 hover:bg-amber-500/40 text-amber-300 text-sm px-4 py-1.5 rounded-lg transition-colors"
+                            title="导出当前审核结果"
+                        >
+                            导出结果
+                        </button>
+                    </div>
+                </div>
+            </div>
+
             <!-- 输入区域 -->
             <div class="border-t border-slate-700/50 p-4 bg-slate-800/30">
                 <div class="flex gap-3">
@@ -265,6 +303,28 @@
                     </div>
                 </div>
 
+                <!-- 逐段审核选项 -->
+                <div id="segmentOptions" class="hidden mt-4">
+                    <div class="bg-slate-700/30 rounded-lg p-4 border border-slate-600/50">
+                        <label class="flex items-center gap-3 cursor-pointer">
+                            <input type="checkbox" id="segmentMode" class="w-4 h-4 rounded bg-slate-700 border-slate-500 text-emerald-500 focus:ring-emerald-500" onchange="toggleSegmentMode()">
+                            <div>
+                                <span class="text-slate-200 font-medium">逐段审核模式</span>
+                                <p class="text-slate-400 text-sm mt-1">每次只审核文档的一个段落（约4000字符），审核完一段后可继续下一段，适合长文档审核</p>
+                            </div>
+                        </label>
+                        <div id="segmentSizeOptions" class="hidden mt-3 pl-7">
+                            <label class="text-slate-400 text-sm">每段字符数：</label>
+                            <select id="segmentSize" class="ml-2 bg-slate-700/50 border border-slate-600 rounded px-3 py-1 text-slate-200 text-sm">
+                                <option value="2000">2000 字符（短段，快速响应）</option>
+                                <option value="4000" selected>4000 字符（推荐）</option>
+                                <option value="6000">6000 字符（长段，详细分析）</option>
+                                <option value="8000">8000 字符（超长段）</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 上传进度 -->
                 <div id="uploadProgress" class="hidden mt-4">
                     <div class="bg-slate-700/50 rounded-full h-2 overflow-hidden">
@@ -295,6 +355,20 @@
         let selectedFile = null;
         let latestReviewResult = null;    // 最新审核结果（用于导出）
         let latestReviewFilename = null;  // 最新审核文件名
+
+        // 逐段审核状态
+        let segmentState = {
+            active: false,            // 是否处于逐段审核模式
+            totalSegments: 0,         // 总段数
+            completedSegments: 0,     // 已完成段数
+            progressPct: 0,           // 进度百分比
+            filename: '',             // 审核文件名
+            auditType: '',            // 审核类型
+            accumulatedAnswer: '',    // 累积的审核文本
+            isComplete: false,        // 是否全部完成
+            autoMode: true,           // 自动连续审核（默认开启）
+            _autoTimer: null          // 自动审核定时器 ID
+        };
 
         const chatContainer = document.getElementById('chatContainer');
         const userInput = document.getElementById('userInput');
@@ -649,6 +723,10 @@
         async function clearChat() {
             try {
                 await fetch(`/api/clear?session_id=${sessionId}`, { method: 'POST' });
+                // 同时重置逐段审核状态
+                const formData = new FormData();
+                formData.append('session_id', sessionId);
+                await fetch('/api/segment-reset', { method: 'POST', body: formData });
             } catch (e) {
                 console.error('清除历史失败:', e);
             }
@@ -668,10 +746,28 @@
             `;
 
             sessionId = 'session_' + Date.now();
-            // 清空后隐藏导出按钮
+            // 清空后隐藏导出按钮和进度条
             document.getElementById('exportBtn').classList.add('hidden');
+            document.getElementById('segmentProgressBar').classList.add('hidden');
             latestReviewResult = null;
             latestReviewFilename = null;
+            // 清除自动审核定时器
+            if (segmentState._autoTimer) {
+                clearTimeout(segmentState._autoTimer);
+            }
+            // 重置逐段审核状态
+            segmentState = {
+                active: false,
+                totalSegments: 0,
+                completedSegments: 0,
+                progressPct: 0,
+                filename: '',
+                auditType: '',
+                accumulatedAnswer: '',
+                isComplete: false,
+                autoMode: true,
+                _autoTimer: null
+            };
         }
 
         async function exportReview() {
@@ -735,8 +831,11 @@
             fileInput.value = '';
             document.getElementById('fileInfo').classList.add('hidden');
             document.getElementById('processOptions').classList.add('hidden');
+            document.getElementById('segmentOptions').classList.add('hidden');
+            document.getElementById('segmentSizeOptions').classList.add('hidden');
             document.getElementById('uploadProgress').classList.add('hidden');
             document.getElementById('uploadConfirmBtn').disabled = true;
+            document.getElementById('segmentMode').checked = false;
             dropZone.classList.remove('dragover');
         }
 
@@ -1007,6 +1106,7 @@
             if (this.value === 'extract' || this.value === 'chat') {
                 auditHint.classList.add('hidden');
                 docTypeContainer.classList.add('hidden');
+                document.getElementById('segmentOptions').classList.add('hidden');
             } else {
                 auditHint.classList.remove('hidden');
                 hintTitle.textContent = info.title;
@@ -1014,8 +1114,20 @@
                 hintDesc.textContent = info.hint;
                 // 更新文件类型下拉菜单
                 updateDocTypeOptions(this.value);
+                // 显示逐段审核选项
+                document.getElementById('segmentOptions').classList.remove('hidden');
             }
         });
+
+        function toggleSegmentMode() {
+            const checked = document.getElementById('segmentMode').checked;
+            const sizeOptions = document.getElementById('segmentSizeOptions');
+            if (checked) {
+                sizeOptions.classList.remove('hidden');
+            } else {
+                sizeOptions.classList.add('hidden');
+            }
+        }
 
         // 页面加载时初始化文件类型下拉菜单
         updateDocTypeOptions('risk_management');
@@ -1024,6 +1136,7 @@
             if (!selectedFile) return;
 
             const processMode = document.getElementById('processMode').value;
+            const isSegmentMode = document.getElementById('segmentMode').checked;
             document.getElementById('uploadProgress').classList.remove('hidden');
             document.getElementById('uploadConfirmBtn').disabled = true;
 
@@ -1038,18 +1151,24 @@
                 // 六大审核领域
                 const AUDIT_MODES = ['risk_management', 'design_dev', 'software_compliance',
                     'registration', 'production_quality', 'system_construction'];
-                if (AUDIT_MODES.includes(processMode)) {
-                    endpoint = '/api/analyze';
-                    auditType = processMode;
-                }
 
-                // 如果是分析模式，添加审核类型参数
-                if (endpoint === '/api/analyze') {
-                    formData.append('audit_type', auditType);
-                    // 同时传递文件类型
-                    const docType = document.getElementById('docType').value;
-                    if (docType) {
-                        formData.append('doc_type', docType);
+                if (AUDIT_MODES.includes(processMode)) {
+                    auditType = processMode;
+                    if (isSegmentMode) {
+                        // 逐段审核模式
+                        const segSize = document.getElementById('segmentSize').value;
+                        endpoint = `/api/analyze-segment?segment_size=${encodeURIComponent(segSize)}`;
+                        formData.append('action', 'start');
+                        formData.append('audit_type', auditType);
+                        formData.append('segment_size', segSize);
+                        const docType = document.getElementById('docType').value;
+                        if (docType) formData.append('doc_type', docType);
+                    } else {
+                        // 传统一次性审核模式
+                        endpoint = '/api/analyze';
+                        formData.append('audit_type', auditType);
+                        const docType = document.getElementById('docType').value;
+                        if (docType) formData.append('doc_type', docType);
                     }
                 }
 
@@ -1080,7 +1199,11 @@
                     const fileName = selectedFile ? selectedFile.name : '未知文件';
                     closeUploadModal();
 
-                    if (AUDIT_MODES.includes(processMode)) {
+                    if (AUDIT_MODES.includes(processMode) && isSegmentMode) {
+                        // ===== 逐段审核模式 =====
+                        handleSegmentStartResponse(data, fileName, auditType);
+                    } else if (AUDIT_MODES.includes(processMode)) {
+                        // ===== 传统一次性审核 =====
                         const auditLabels = {
                             risk_management: '风险管理专项审核',
                             design_dev: '设计开发审核',
@@ -1092,12 +1215,10 @@
                         const auditTypeText = auditLabels[processMode] || '体系审核';
                         addMessage('user', `请进行${auditTypeText}: ${fileName}`);
                         if (data.answer) {
-                            // 保存审核结果用于导出
                             latestReviewResult = data.answer;
                             latestReviewFilename = fileName;
                             document.getElementById('exportBtn').classList.remove('hidden');
                             splitAndAddMessages('assistant', data.answer);
-                            // 显示检索到的相关文档
                             if (data.retrieved_docs && data.retrieved_docs.length > 0) {
                                 const docsList = data.retrieved_docs.map((doc, i) =>
                                     `${i + 1}. ${doc.source}`
@@ -1120,6 +1241,243 @@
                 alert('上传失败: ' + error.message);
                 document.getElementById('uploadProgress').classList.add('hidden');
                 document.getElementById('uploadConfirmBtn').disabled = false;
+            }
+        }
+
+        // ===== 逐段审核相关函数 =====
+        function handleSegmentStartResponse(data, fileName, auditType) {
+            // 更新逐段审核状态
+            segmentState.active = true;
+            segmentState.totalSegments = data.total_segments;
+            segmentState.completedSegments = data.segment_index;
+            segmentState.progressPct = data.progress.progress_pct;
+            segmentState.filename = fileName;
+            segmentState.auditType = auditType;
+            segmentState.accumulatedAnswer = '';
+            segmentState.isComplete = data.progress.is_complete;
+
+            // 显示进度条
+            showSegmentProgress();
+
+            // 显示第一条审核消息
+            const auditLabels = {
+                risk_management: '风险管理专项审核',
+                design_dev: '设计开发审核',
+                software_compliance: '软件合规审核',
+                registration: '注册申报审核',
+                production_quality: '生产质量审核',
+                system_construction: '体系建设审核'
+            };
+            const auditTypeText = auditLabels[auditType] || '体系审核';
+            addMessage('user', `请进行${auditTypeText}（逐段审核）: ${fileName}`);
+
+            // 显示第一段审核结果
+            const segInfo = `📋 **第 ${data.segment_index}/${data.total_segments} 段** (字符 ${data.start_pos}-${data.end_pos}，进度 ${data.progress.progress_pct}%)`;
+            splitAndAddMessages('assistant', segInfo + '\n\n' + data.segment_answer);
+            segmentState.accumulatedAnswer += `## 第 ${data.segment_index} 段 (字符 ${data.start_pos}-${data.end_pos})\n\n${data.segment_answer}\n\n---\n\n`;
+
+            // 显示参考资料
+            if (data.retrieved_docs && data.retrieved_docs.length > 0) {
+                const docsList = data.retrieved_docs.map((doc, i) =>
+                    `${i + 1}. ${doc.source}`
+                ).join('\n');
+                setTimeout(() => {
+                    addMessage('assistant', `📚 参考知识库文档：\n${docsList}`);
+                }, 600);
+            }
+
+            updateSegmentProgressUI(data);
+
+            // 检查是否已经全部完成
+            if (data.progress.is_complete) {
+                handleSegmentComplete();
+            } else if (segmentState.autoMode) {
+                // 自动审核下一段（800ms 延迟让用户看到当前段结果）
+                segmentState._autoTimer = setTimeout(() => continueSegmentReview(), 800);
+                document.getElementById('continueSegmentBtn').textContent = '停止自动审核';
+            }
+        }
+
+        async function continueSegmentReview() {
+            if (!segmentState.active || isLoading) return;
+
+            setLoading(true);
+            showTypingIndicator();
+
+            const continueBtn = document.getElementById('continueSegmentBtn');
+            continueBtn.disabled = true;
+            continueBtn.textContent = '审核中...';
+
+            try {
+                const formData = new FormData();
+                formData.append('session_id', sessionId);
+                formData.append('action', 'continue');
+                formData.append('audit_type', segmentState.auditType);
+
+                const response = await fetch('/api/analyze-segment', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                hideTypingIndicator();
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || '请求失败');
+                }
+
+                const data = await response.json();
+
+                if (data.action === 'complete') {
+                    // 全部完成
+                    addMessage('assistant', '✅ 文档已全部审核完成！请点击「生成综合报告」获取完整审核报告。');
+                    segmentState.isComplete = true;
+                    segmentState.progressPct = 100;
+                    segmentState._autoTimer = null;
+                    updateSegmentProgressUI(data);
+                    handleSegmentComplete();
+                    return;
+                }
+
+                // 显示新段落审核结果
+                const segInfo = `📋 **第 ${data.segment_index}/${data.total_segments} 段** (字符 ${data.start_pos}-${data.end_pos}，进度 ${data.progress.progress_pct}%)`;
+                splitAndAddMessages('assistant', segInfo + '\n\n' + data.segment_answer);
+                segmentState.accumulatedAnswer += `## 第 ${data.segment_index} 段 (字符 ${data.start_pos}-${data.end_pos})\n\n${data.segment_answer}\n\n---\n\n`;
+
+                // 更新状态
+                segmentState.completedSegments = data.segment_index;
+                segmentState.progressPct = data.progress.progress_pct;
+                segmentState.isComplete = data.progress.is_complete;
+
+                updateSegmentProgressUI(data);
+
+                if (data.progress.is_complete) {
+                    handleSegmentComplete();
+                } else if (segmentState.autoMode) {
+                    // 自动审核下一段（800ms 延迟让用户看到当前段结果）
+                    segmentState._autoTimer = setTimeout(() => continueSegmentReview(), 800);
+                }
+            } catch (error) {
+                hideTypingIndicator();
+                // 出错时停止自动审核
+                if (segmentState._autoTimer) {
+                    clearTimeout(segmentState._autoTimer);
+                    segmentState._autoTimer = null;
+                }
+                addMessage('assistant', `❌ 审核失败: ${error.message}`);
+            } finally {
+                setLoading(false);
+                if (segmentState._autoTimer) {
+                    continueBtn.textContent = '停止自动审核';
+                } else {
+                    continueBtn.textContent = '继续审核下一段';
+                }
+                continueBtn.disabled = false;
+            }
+        }
+
+        // 继续/停止按钮点击处理：自动模式下停止，手动模式下继续
+        function handleContinueBtnClick() {
+            if (segmentState._autoTimer) {
+                // 停止自动审核
+                clearTimeout(segmentState._autoTimer);
+                segmentState._autoTimer = null;
+                segmentState.autoMode = false;
+                const btn = document.getElementById('continueSegmentBtn');
+                btn.textContent = '继续审核下一段';
+            } else {
+                // 手动继续（重新开启自动模式）
+                segmentState.autoMode = true;
+                continueSegmentReview();
+            }
+        }
+
+        async function synthesizeSegmentReport() {
+            if (!segmentState.active || isLoading) return;
+
+            setLoading(true);
+            showTypingIndicator();
+            document.getElementById('synthesizeBtn').disabled = true;
+
+            try {
+                const formData = new FormData();
+                formData.append('session_id', sessionId);
+
+                const response = await fetch('/api/segment-synthesize', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                hideTypingIndicator();
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || '综合报告生成失败');
+                }
+
+                const data = await response.json();
+
+                // 显示综合报告
+                addMessage('user', `请生成综合审核报告: ${segmentState.filename}`);
+                splitAndAddMessages('assistant', data.full_report);
+
+                // 保存用于导出
+                latestReviewResult = data.full_report;
+                latestReviewFilename = segmentState.filename;
+                document.getElementById('exportBtn').classList.remove('hidden');
+
+                // 隐藏综合报告按钮
+                document.getElementById('synthesizeBtn').classList.add('hidden');
+                document.getElementById('segmentExportBtn').classList.remove('hidden');
+
+            } catch (error) {
+                hideTypingIndicator();
+                addMessage('assistant', `❌ 综合报告生成失败: ${error.message}`);
+            } finally {
+                setLoading(false);
+                document.getElementById('synthesizeBtn').disabled = false;
+            }
+        }
+
+        function exportSegmentReview() {
+            latestReviewResult = segmentState.accumulatedAnswer;
+            latestReviewFilename = segmentState.filename;
+            document.getElementById('exportBtn').classList.remove('hidden');
+            exportReview();
+        }
+
+        function handleSegmentComplete() {
+            // 清除自动审核定时器
+            if (segmentState._autoTimer) {
+                clearTimeout(segmentState._autoTimer);
+                segmentState._autoTimer = null;
+            }
+            // 隐藏继续按钮，显示综合报告按钮
+            document.getElementById('continueSegmentBtn').classList.add('hidden');
+            document.getElementById('synthesizeBtn').classList.remove('hidden');
+            document.getElementById('segmentExportBtn').classList.remove('hidden');
+            document.getElementById('segmentProgressText').textContent = '全部段落审核完成！可生成综合报告';
+        }
+
+        function showSegmentProgress() {
+            document.getElementById('segmentProgressBar').classList.remove('hidden');
+            document.getElementById('continueSegmentBtn').classList.remove('hidden');
+            document.getElementById('synthesizeBtn').classList.add('hidden');
+            document.getElementById('segmentExportBtn').classList.add('hidden');
+        }
+
+        function updateSegmentProgressUI(data) {
+            const progress = data.progress;
+            document.getElementById('segmentProgressFill').style.width = progress.progress_pct + '%';
+            document.getElementById('segmentProgressLabel').textContent =
+                `${progress.segments_completed}/${progress.total_segments} 段`;
+            document.getElementById('segmentProgressText').textContent =
+                `已完成 ${progress.segments_completed}/${progress.total_segments} 段 (${progress.progress_pct}%)`;
+
+            if (progress.is_complete) {
+                document.getElementById('continueSegmentBtn').classList.add('hidden');
+            } else {
+                document.getElementById('continueSegmentBtn').classList.remove('hidden');
             }
         }
 
