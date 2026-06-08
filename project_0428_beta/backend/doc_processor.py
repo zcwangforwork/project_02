@@ -403,6 +403,282 @@ def split_by_markdown_headers(text: str) -> List[Tuple[str, str, int]]:
     return sections
 
 
+# ============== 编号式标题正则（多策略大纲解析使用）==============
+# 顺序: 优先匹配更具体的格式，避免误判
+# 层级设计原则：
+#   - "第X章" 和 阿拉伯数字一级编号 → L1（最高级）
+#   - "X.X" → L2（与 Markdown ## 同级，作为审核单元）
+#   - "X.X.X" / 中文 "一、" → L3（合并到父二级小节内）
+#   - "X.X.X.X" / "(一)" / "(1)" → L4（更深层，合并）
+# 这样在与 Markdown # ## ### 混合出现时，编号标题通常会成为子节而非平级
+_NUMBERING_PATTERNS = [
+    # "第X章" / "第X篇" / "第X部分" → level 1
+    (re.compile(r'^(第[一二三四五六七八九十百千零〇\d]+[章篇部分])[\s::、]*(.*)$'), 1),
+    # "X.X.X.X" 四级编号 → level 4
+    (re.compile(r'^(\d+\.\d+\.\d+\.\d+)[\s::、)]*(.+)$'), 4),
+    # "X.X.X" 三级编号 → level 3
+    (re.compile(r'^(\d+\.\d+\.\d+)[\s::、)]*(.+)$'), 3),
+    # "X.X" 二级编号 → level 2
+    (re.compile(r'^(\d+\.\d+)[\s::、)]*(.+)$'), 2),
+    # "X、" 或 "X." 一级数字编号 → level 1（前提：后面有中文/字母标题文字，且长度合理）
+    (re.compile(r'^(\d+)[、.)][\s]+([^\d].{1,80})$'), 1),
+    # "一、二、三、" 中文数字 → level 3（通常出现在 ## 小节内，作为列举项；不抢占 L2 审核单元位置）
+    (re.compile(r'^([一二三四五六七八九十]+)[、.)][\s]*(.{1,80})$'), 3),
+    # "(一)(二)" 或 "（一）（二）" 中文带括号 → level 4
+    (re.compile(r'^[\(（]([一二三四五六七八九十]+)[\)）][\s]*(.{1,80})$'), 4),
+    # "(1)(2)" 或 "（1）（2）" 数字带括号 → level 4
+    (re.compile(r'^[\(（](\d+)[\)）][\s]*(.{1,80})$'), 4),
+]
+
+
+def _detect_numbering_heading(line: str) -> Tuple[int, str]:
+    """
+    检测一行是否为编号式标题。
+
+    Returns:
+        (level, title) — level=0 表示非标题；title 为标题文字（含编号前缀）
+    """
+    stripped = line.strip()
+    if not stripped or len(stripped) > 120:
+        # 标题一般不会太长（>120字符基本是正文）
+        return 0, ""
+    # 已经是 Markdown 标题的不再二次识别
+    if stripped.startswith('#'):
+        return 0, ""
+
+    for pattern, level in _NUMBERING_PATTERNS:
+        if pattern.match(stripped):
+            return level, stripped
+    return 0, ""
+
+
+def parse_document_outline(text: str) -> List[dict]:
+    """
+    多策略大纲解析：识别文档的章节树状结构。
+
+    策略融合（按优先级）：
+    1. Markdown 标题（# / ## / ### ...）— 来自 Word Heading 样式或显式 Markdown
+    2. 编号正则（"第X章" / "X.X" / "X.X.X" / "一、" / "(一)" / "(1)" 等）
+
+    Returns:
+        树状大纲列表，每个节点：
+        {
+            "title": str,           # 标题文字
+            "level": int,           # 层级 1~6
+            "content": str,         # 该标题下的直接正文（不含子节点的正文）
+            "children": List[dict]  # 子节点
+        }
+    """
+    # 第一步：扫描每一行，识别"标题行"和"正文行"
+    # 标题行: {"is_heading": True, "level": int, "title": str}
+    # 正文行: {"is_heading": False, "text": str}
+    items = []
+    for raw_line in text.split('\n'):
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if not stripped:
+            items.append({"is_heading": False, "text": ""})
+            continue
+
+        # 策略1: Markdown 标题
+        md_match = re.match(r'^(#{1,6})\s+(.+)$', stripped)
+        if md_match:
+            items.append({
+                "is_heading": True,
+                "level": len(md_match.group(1)),
+                "title": md_match.group(2).strip()
+            })
+            continue
+
+        # 策略2: 编号式标题
+        num_level, num_title = _detect_numbering_heading(line)
+        if num_level > 0:
+            items.append({
+                "is_heading": True,
+                "level": num_level,
+                "title": num_title
+            })
+            continue
+
+        items.append({"is_heading": False, "text": line})
+
+    # 第二步：把扁平的 items 按层级组装成树
+    root_children: List[dict] = []
+    # 用栈维护"当前层级路径"，stack[-1] 是最近的祖先节点
+    stack: List[dict] = []
+    # 一个虚拟根，方便统一处理
+    pending_preface: List[str] = []  # 第一个标题之前的正文
+
+    def _new_node(level: int, title: str) -> dict:
+        return {"title": title, "level": level, "content": "", "children": []}
+
+    for item in items:
+        if item["is_heading"]:
+            node = _new_node(item["level"], item["title"])
+            # 找到合适的父：栈中第一个 level < 当前 level 的
+            while stack and stack[-1]["level"] >= node["level"]:
+                stack.pop()
+            if stack:
+                stack[-1]["children"].append(node)
+            else:
+                root_children.append(node)
+            stack.append(node)
+        else:
+            # 正文行 → 加到当前栈顶节点的 content；若栈空则放 pending_preface
+            text_line = item.get("text", "")
+            if stack:
+                if stack[-1]["content"]:
+                    stack[-1]["content"] += "\n" + text_line
+                else:
+                    stack[-1]["content"] = text_line
+            else:
+                pending_preface.append(text_line)
+
+    # 第三步：如果存在 preface（文档开头未归属任何标题的正文），合成一个虚拟节点
+    preface_text = "\n".join(pending_preface).strip()
+    if preface_text:
+        root_children.insert(0, {
+            "title": "文档开头",
+            "level": 1,
+            "content": preface_text,
+            "children": []
+        })
+
+    # 第四步：清理每个节点 content 的首尾空白
+    def _clean(node: dict):
+        node["content"] = node["content"].strip()
+        for child in node["children"]:
+            _clean(child)
+    for n in root_children:
+        _clean(n)
+
+    return root_children
+
+
+def _render_subtree_as_content(node: dict, base_level: int = 2) -> str:
+    """
+    把一个节点及其所有子节点（三级及更深）的内容渲染为合并文本。
+    用于"二级小节"作为审核单元时，把它下面的三级/四级内容并入。
+
+    Args:
+        node: 起始节点
+        base_level: 起始层级（用于决定子节点用几个 # 做副标题）
+
+    Returns:
+        合并后的文本（保留子层级的小标题，便于 LLM 理解结构）
+    """
+    parts: List[str] = []
+    if node.get("content"):
+        parts.append(node["content"])
+
+    for child in node.get("children", []):
+        sub_level = child.get("level", base_level + 1)
+        # 渲染为副标题前缀（用 # 标记，便于 LLM 识别）
+        hashes = "#" * min(sub_level, 6)
+        parts.append("")
+        parts.append(f"{hashes} {child['title']}")
+        sub_text = _render_subtree_as_content(child, sub_level)
+        if sub_text:
+            parts.append(sub_text)
+
+    return "\n".join(p for p in parts if p is not None).strip()
+
+
+def flatten_to_audit_units(outline: List[dict]) -> List[Tuple[str, str, int, str]]:
+    """
+    把树状大纲扁平化为审核单元列表。
+
+    规则（与本次需求一致）:
+    - 审核粒度为"二级小节"
+    - 三级及以下作为内容合并入父二级小节
+    - 一级章节本身：若其下有二级子节 → 不作为独立审核单元（其直接 content 并入第一个子节前），
+      若其下没有二级子节 → 一级章节本身作为审核单元（合并其下三级及以下内容）
+
+    Args:
+        outline: parse_document_outline() 的返回值
+
+    Returns:
+        [(title, content, level, breadcrumb), ...]
+        breadcrumb: "第一章 / 1.1 标题" 形式的面包屑，便于 LLM 理解上下文
+    """
+    units: List[Tuple[str, str, int, str]] = []
+
+    def _walk_level1(chap_node: dict):
+        chap_title = chap_node["title"]
+        # 找到所有 level==2 的子节
+        level2_children = [c for c in chap_node["children"] if c.get("level") == 2]
+        # 也允许"level 不是 2 但 < 当前 chap+2"的情况下走二级处理（兼容跳级）
+        if not level2_children:
+            # 没有二级 → 整章作为审核单元，合并所有子节内容
+            content_parts = []
+            if chap_node.get("content"):
+                content_parts.append(chap_node["content"])
+            for child in chap_node["children"]:
+                hashes = "#" * min(child.get("level", 2), 6)
+                content_parts.append(f"\n{hashes} {child['title']}")
+                sub = _render_subtree_as_content(child, child.get("level", 2))
+                if sub:
+                    content_parts.append(sub)
+            merged = "\n".join(p for p in content_parts if p).strip()
+            if merged or chap_node.get("children"):
+                units.append((chap_title, merged, 1, chap_title))
+            return
+
+        # 有二级子节 → 一级章节本身的 content 作为"章引言"，并入第一个二级小节前
+        chap_preface = chap_node.get("content", "").strip()
+
+        for idx, sec_node in enumerate(level2_children):
+            sec_title = sec_node["title"]
+            sec_parts = []
+            # 把章引言并入第一个小节（仅一次）
+            if idx == 0 and chap_preface:
+                sec_parts.append(f"[本章引言]\n{chap_preface}\n")
+
+            if sec_node.get("content"):
+                sec_parts.append(sec_node["content"])
+
+            # 把该二级小节下的所有子节（三级及更深）合并进来
+            for sub in sec_node.get("children", []):
+                hashes = "#" * min(sub.get("level", 3), 6)
+                sec_parts.append(f"\n{hashes} {sub['title']}")
+                sub_text = _render_subtree_as_content(sub, sub.get("level", 3))
+                if sub_text:
+                    sec_parts.append(sub_text)
+
+            merged = "\n".join(p for p in sec_parts if p).strip()
+            breadcrumb = f"{chap_title} / {sec_title}"
+            units.append((sec_title, merged, 2, breadcrumb))
+
+    for top_node in outline:
+        top_level = top_node.get("level", 1)
+        if top_level == 1:
+            _walk_level1(top_node)
+        else:
+            # 顶层不是 level 1（罕见，比如文档只有 ## 没有 #）
+            # 当 level==2 时，每个都直接作为审核单元
+            if top_level == 2:
+                content_parts = []
+                if top_node.get("content"):
+                    content_parts.append(top_node["content"])
+                for sub in top_node.get("children", []):
+                    hashes = "#" * min(sub.get("level", 3), 6)
+                    content_parts.append(f"\n{hashes} {sub['title']}")
+                    sub_text = _render_subtree_as_content(sub, sub.get("level", 3))
+                    if sub_text:
+                        content_parts.append(sub_text)
+                merged = "\n".join(p for p in content_parts if p).strip()
+                units.append((top_node["title"], merged, 2, top_node["title"]))
+            else:
+                # level >= 3 直接作为独立审核单元（极少出现）
+                merged = _render_subtree_as_content(top_node, top_level)
+                if top_node.get("content"):
+                    merged = (top_node["content"] + "\n" + merged).strip()
+                units.append((top_node["title"], merged, top_level, top_node["title"]))
+
+    return units
+
+
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
     """
     将长文本分块，便于向量检索

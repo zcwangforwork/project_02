@@ -1,5 +1,62 @@
 # Code Writer Log
 
+## 2026-06-08 - Config Adjust: 小节审核并发数 2 → 5
+- File: `backend/rag_retriever.py:1850`
+- Change: `asyncio.Semaphore(2)` → `asyncio.Semaphore(5)`；同步更新 docstring 注释
+- Reason: 用户要求提升并发提高审核速度。预期速度 ~2.5×
+- Result: Success
+
+---
+
+## 2026-06-08 - Config Adjust: 最终报告字符上限 50000 → 200000
+- File: `backend/rag_retriever.py:1913`
+- Change: `MAX_FINAL_ANSWER_CHARS = 50000` → `MAX_FINAL_ANSWER_CHARS = 200000`
+- Reason: 用户反馈 41 小节审核报告共 134695 字符触发 50000 截断；改造为小节级审核后报告体量翻倍，需放宽
+- Result: Success
+
+---
+
+## 2026-06-07 11:21 - Task Start: 文档审核改造为"逐小节"模式
+
+### User Request
+> 这个项目能否在审核上传的文档时，先分析上传的文档有哪些章节，每个章节有哪些小节，然后再一个小节一个小节地使用 rag 检索、调用 llm api 进行审核
+
+### Plan
+1. doc_processor.py 新增 `parse_document_outline()`：多策略融合（Word 样式标题 + 编号正则 + Markdown #）→ 返回树状大纲
+2. doc_processor.py 新增 `flatten_to_audit_units()`：将树状大纲扁平化为"二级小节"为单位的审核列表，三级及以下合并到父小节内容中
+3. rag_retriever.py:1788 `analyze_document()` 改为使用新的扁平化结果做审核调度
+4. 取消 30 段硬上限，改为分批调度
+
+### Decisions
+- 二级小节作为审核单元（成本/精度平衡）
+- 一级章节若无子节，则该一级本身作为审核单元
+- 保持原 Semaphore(2) 并发控制不变，仅放开总数限制（30→200）
+
+---
+
+## 2026-06-07 11:30 - File Edited: doc_processor.py
+- File: `backend/doc_processor.py`
+- Change: 在 `split_by_markdown_headers()` 之后新增：
+  - `_NUMBERING_PATTERNS`: 8 条编号正则（第X章 / X.X.X.X / X.X.X / X.X / 一、 / (一) / (1) 等），层级 1~4
+  - `_detect_numbering_heading(line)`: 返回 (level, title)
+  - `parse_document_outline(text)`: 多策略融合，返回树状 `[{title, level, content, children}]`
+  - `_render_subtree_as_content(node, base_level)`: 把子树合并为带 # 副标题的文本
+  - `flatten_to_audit_units(outline)`: 扁平化为 `[(title, content, level, breadcrumb)]`，二级小节为审核单元
+- Result: Success — 编号已设为相对合理层级，中文编号优先低于阿拉伯数字编号，避免与 ## 抢占审核单元位置
+
+## 2026-06-07 11:33 - File Edited: rag_retriever.py
+- File: `backend/rag_retriever.py`
+- Change:
+  - `_audit_single_section()` 新增 `breadcrumb` 参数；上下文中新增"文档定位"提示；返回值新增 `breadcrumb` 字段
+  - `analyze_document()` 改用 `parse_document_outline` + `flatten_to_audit_units`；上限 30→200；综合分析与最终报告改用 breadcrumb 作为定位
+- Result: Success
+
+## 2026-06-07 11:36 - Smoke Test
+- Command: `python -c "import doc_processor; ..."` 跑了3个样本（纯Markdown / 纯编号 / 含 一、和(一) 子小节）
+- Result: Success — 所有样本正确识别章节结构，三级及以下被合并入父二级小节，breadcrumb 路径完整。语法 / 导入 / 符号检查全部通过。
+
+---
+
 ## 2026-06-03 09:53 - Enhancement: 基于DHF清单扩充审核文档类型
 
 ### Change Summary

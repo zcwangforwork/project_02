@@ -1550,7 +1550,8 @@ class RAGRetriever:
         section_content: str,
         section_level: int,
         audit_type: str,
-        semaphore: asyncio.Semaphore
+        semaphore: asyncio.Semaphore,
+        breadcrumb: str = ""
     ) -> Dict[str, Any]:
         """
         审核单个章节
@@ -1561,6 +1562,7 @@ class RAGRetriever:
             section_level: 标题层级
             audit_type: 审核类型
             semaphore: 并发信号量
+            breadcrumb: 章节面包屑路径（如 "第一章 风险管理 / 1.1 范围"），便于 LLM 理解上下文
 
         Returns:
             包含审核结果的字典
@@ -1573,9 +1575,10 @@ class RAGRetriever:
                 # 选择对应领域的 system prompt（六大领域 + general 保底）
                 system_prompt = self.SECTION_PROMPTS.get(audit_type, self.GENERAL_SECTION_PROMPT)
 
-                # 构建每章节的上下文
+                # 构建每章节的上下文（如有 breadcrumb，加入文档定位信息）
+                location_hint = f"\n## 文档定位：{breadcrumb}\n" if breadcrumb else ""
                 context_parts = [
-                    f"## 当前审核章节：{section_title}\n",
+                    f"## 当前审核章节：{section_title}{location_hint}\n",
                     "### 用户文档原文：",
                     section_content[:5000],
                     "\n### 标准要求/参考模板（来自知识库）："
@@ -1607,7 +1610,8 @@ class RAGRetriever:
                     "answer": answer,
                     "summary": summary,
                     "relevant_docs": relevant_docs,
-                    "status": "success"
+                    "status": "success",
+                    "breadcrumb": breadcrumb
                 }
             except Exception as e:
                 logger.error(f"章节 '{section_title}' 审核失败: {e}")
@@ -1617,7 +1621,8 @@ class RAGRetriever:
                     "answer": f"### 审核失败\n\n该章节审核过程中发生错误: {str(e)}",
                     "summary": f"审核失败: {str(e)}",
                     "relevant_docs": [],
-                    "status": "error"
+                    "status": "error",
+                    "breadcrumb": breadcrumb or section_title
                 }
 
     def _extract_section_summary(self, answer: str) -> str:
@@ -1798,10 +1803,11 @@ class RAGRetriever:
         """
         使用多轮审核流水线分析用户文档
 
-        流水线：
-        1. 代码分割：按 Markdown 标题切分章节
-        2. 逐章并发审核：每章节独立 LLM 调用，asyncio.gather + Semaphore(2)
-        3. 综合分析：汇总各章节摘要，生成最终报告
+        流水线（v2 — 小节级调度）：
+        1. 大纲解析：parse_document_outline() 多策略识别章节树状结构
+        2. 扁平化为审核单元：flatten_to_audit_units() 取二级小节，三级及以下合并入父小节
+        3. 逐小节并发审核：每小节独立 RAG 检索 + LLM 调用，Semaphore(5) 控制并发
+        4. 综合分析：汇总各小节摘要，生成最终报告
 
         Args:
             user_document: 用户文档内容（Markdown 格式）
@@ -1815,38 +1821,43 @@ class RAGRetriever:
         Returns:
             包含完整审核报告的字典
         """
-        from doc_processor import split_by_markdown_headers
+        from doc_processor import parse_document_outline, flatten_to_audit_units
 
         # 文件类型中文名
         doc_type_label = self._DOC_TYPE_LABELS.get(doc_type, doc_type) if doc_type else ""
 
-        # ===== 第一轮：代码分割章节 =====
-        sections = split_by_markdown_headers(user_document)
-        logger.info(f"文档分割为 {len(sections)} 个章节")
+        # ===== 第一轮：解析文档大纲（树状）=====
+        outline = parse_document_outline(user_document)
+        logger.info(f"文档大纲解析完成，顶层节点 {len(outline)} 个")
 
-        if not sections:
-            # 降级到原始模式
+        # ===== 第二轮：扁平化为审核单元（二级小节为单位）=====
+        audit_units = flatten_to_audit_units(outline)
+        logger.info(f"扁平化后共 {len(audit_units)} 个审核单元（二级小节）")
+
+        if not audit_units:
+            # 完全没识别出结构 → 降级到原始模式
             return await self._analyze_document_fallback(user_document, user_filename, audit_type, doc_type_label)
 
-        # 限制最多审核 30 个章节，避免超长文档导致内存溢出
-        MAX_SECTIONS = 30
-        if len(sections) > MAX_SECTIONS:
-            logger.warning(f"文档章节过多({len(sections)})，仅审核前 {MAX_SECTIONS} 个")
-            sections = sections[:MAX_SECTIONS]
+        # 安全上限保护（防止极端文档导致内存/费用爆炸）
+        # 取消了之前 30 段硬上限，改为大幅放宽到 200，覆盖 99% 真实文档
+        MAX_UNITS = 200
+        if len(audit_units) > MAX_UNITS:
+            logger.warning(f"审核单元过多({len(audit_units)})，仅审核前 {MAX_UNITS} 个")
+            audit_units = audit_units[:MAX_UNITS]
 
-        # ===== 第二轮：逐章并发审核 =====
-        # 限制并发数为 2，避免 ChromaDB HNSW 索引多线程同时加载导致内存溢出
-        semaphore = asyncio.Semaphore(2)
+        # ===== 第三轮：逐小节并发审核 =====
+        # 并发数 5：平衡速度与 ChromaDB 内存压力（2 → 5 大约 2.5× 加速）
+        semaphore = asyncio.Semaphore(5)
 
         tasks = []
-        for title, content, level in sections:
+        for title, content, level, breadcrumb in audit_units:
             tasks.append(
-                self._audit_single_section(title, content, level, audit_type, semaphore)
+                self._audit_single_section(title, content, level, audit_type, semaphore, breadcrumb)
             )
 
         section_results = await asyncio.gather(*tasks)
 
-        # 释放原始文档文本（已分割为章节，不再需要全文）
+        # 释放原始文档文本（已分割为单元，不再需要全文）
         del user_document
         gc.collect()
 
@@ -1862,25 +1873,28 @@ class RAGRetriever:
             # 清除 relevant_docs 以释放内存（后续只用 summary 和 answer）
             result.pop("relevant_docs", None)
 
-        # ===== 第三轮：综合分析 =====
+        # ===== 第四轮：综合分析 =====
         try:
             # 构建综合分析上下文（只传摘要，不传全文）
             doc_type_hint = f"\n**审核文件类型**: {doc_type_label}\n" if doc_type_label else ""
             synthesis_parts = [
-                f"以下是文档「{user_filename}」{doc_type_hint}各章节的审核摘要：\n"
+                f"以下是文档「{user_filename}」{doc_type_hint}各小节的审核摘要（按文档原顺序）：\n"
             ]
 
             for result in section_results:
+                # 用 breadcrumb 表示完整定位
+                location = result.get("breadcrumb") or result["title"]
                 level_prefix = "#" * max(result["level"], 1) if result["level"] > 0 else "##"
-                synthesis_parts.append(f"{level_prefix} {result['title']}")
+                synthesis_parts.append(f"{level_prefix} {location}")
                 synthesis_parts.append(result['summary'])
                 synthesis_parts.append("")
 
-            # 添加文档章节列表（用于缺失章节检测）
-            synthesis_parts.append("\n---\n文档完整章节列表：")
+            # 添加文档完整小节列表（用于缺失章节检测）
+            synthesis_parts.append("\n---\n文档完整小节列表：")
             for result in section_results:
-                indent = "  " * (result["level"] - 1) if result["level"] > 0 else ""
-                synthesis_parts.append(f"{indent}- {result['title']}")
+                location = result.get("breadcrumb") or result["title"]
+                indent = "  " * max(result["level"] - 1, 0)
+                synthesis_parts.append(f"{indent}- {location}")
 
             synthesis_context = '\n'.join(synthesis_parts)
 
@@ -1892,22 +1906,23 @@ class RAGRetriever:
             )
         except Exception as e:
             logger.error(f"综合分析失败: {e}")
-            synthesis_answer = "## 综合分析\n\n综合分析阶段发生错误，请参考各章节独立审核结果。"
+            synthesis_answer = "## 综合分析\n\n综合分析阶段发生错误，请参考各小节独立审核结果。"
 
         # ===== 组装最终报告 =====
         # 内存优化：限制最终报告大小，防止前端浏览器因 DOM 过大而崩溃
-        MAX_FINAL_ANSWER_CHARS = 50000  # 最终报告最大字符数
-        MAX_SECTION_ANSWER_CHARS = 3000  # 每个章节详情在最终报告中的最大字符数
+        MAX_FINAL_ANSWER_CHARS = 200000  # 最终报告最大字符数
+        MAX_SECTION_ANSWER_CHARS = 3000  # 每个小节详情在最终报告中的最大字符数
 
-        final_parts = [synthesis_answer, "\n\n---\n\n# 各章节详细审核结果\n"]
+        final_parts = [synthesis_answer, "\n\n---\n\n# 各小节详细审核结果\n"]
 
         for i, result in enumerate(section_results, 1):
             level_prefix = "#" * max(result["level"], 1) if result["level"] > 0 else "##"
-            final_parts.append(f"\n{level_prefix} 审核点 {i}：{result['title']}\n")
+            location = result.get("breadcrumb") or result["title"]
+            final_parts.append(f"\n{level_prefix} 审核点 {i}：{location}\n")
             # 截断过长的章节回答
             section_answer = result['answer']
             if len(section_answer) > MAX_SECTION_ANSWER_CHARS:
-                section_answer = section_answer[:MAX_SECTION_ANSWER_CHARS] + f"\n\n... (该章节审核结果共 {len(result['answer'])} 字符，已截断。完整结果请参见上方综合分析)"
+                section_answer = section_answer[:MAX_SECTION_ANSWER_CHARS] + f"\n\n... (该小节审核结果共 {len(result['answer'])} 字符，已截断。完整结果请参见上方综合分析)"
             final_parts.append(section_answer)
             final_parts.append("\n---\n")
 
@@ -1919,14 +1934,14 @@ class RAGRetriever:
             final_answer = final_answer[:MAX_FINAL_ANSWER_CHARS] + (
                 f"\n\n---\n\n⚠️ 审核报告过长，共 {len(final_answer)} 字符，"
                 f"已截断至 {MAX_FINAL_ANSWER_CHARS} 字符。"
-                f"共审核了 {len(sections)} 个章节，详细结果请查看上方各章节分析。"
+                f"共审核了 {len(audit_units)} 个小节，详细结果请查看上方各小节分析。"
             )
 
         result = {
             "answer": final_answer,
-            "section_count": len(sections),
+            "section_count": len(audit_units),
             "section_results": [
-                {"title": r["title"], "status": r["status"]}
+                {"title": r.get("breadcrumb") or r["title"], "status": r["status"]}
                 for r in section_results
             ],
             "retrieved_docs": all_retrieved_docs
